@@ -75,7 +75,7 @@ Environment variables can change the style without changing event payloads:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RSH_PROGRESS_WIDTH` | `24` | Bar width from 1 to 200 |
-| `RSH_PROGRESS_COLOR` | empty | Solid colour overriding both gradient endpoints |
+| `RSH_PROGRESS_COLOR` | empty | Solid colour overriding the gradient |
 | `RSH_PROGRESS_COLOR_START` | `#ff3b30` | Gradient start colour |
 | `RSH_PROGRESS_COLOR_END` | `#ff2d95` | Gradient end colour |
 | `RSH_PROGRESS_FILL` | `█` | Filled character |
