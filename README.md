@@ -1,7 +1,6 @@
 # restish-plugin-pretty
 
 [![CI](https://github.com/natalie-o-perret/restish-plugin-pretty/actions/workflows/ci.yml/badge.svg)](https://github.com/natalie-o-perret/restish-plugin-pretty/actions/workflows/ci.yml)
-[![Docs](https://github.com/natalie-o-perret/restish-plugin-pretty/actions/workflows/docs.yml/badge.svg)](https://github.com/natalie-o-perret/restish-plugin-pretty/actions/workflows/docs.yml)
 [![License](https://img.shields.io/github/license/natalie-o-perret/restish-plugin-pretty)](LICENSE)
 
 `restish-plugin-pretty` builds the `restish-pretty` plugin, which adds the

@@ -8,21 +8,14 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)"
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test -race ./...
-      - name: Build
-        run: go build -o restish-pretty .
+  build-test:
+    uses: natalie-o-perret/.github/.github/workflows/reusable-build-test-go.yml@main
+    with:
+      go-versions: '["1.25","1.26"]'
+      go-version-latest: "1.26"
+      coverage-threshold: 73
+  lint:
+    uses: natalie-o-perret/.github/.github/workflows/reusable-lint.yml@main
