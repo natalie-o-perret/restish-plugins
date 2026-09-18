@@ -39,6 +39,47 @@ $ restish get https://api.example.test/catalog -o pretty --rsh-print b
 `-o pretty` selects the formatter. `--rsh-print b` prints only the rendered
 response body and omits HTTP headers.
 
+## Example
+
+Given this response body:
+
+```json
+{
+  "catalog": {
+    "name": "Example Press"
+  },
+  "publications": [
+    {
+      "id": "pub-001",
+      "title": "Field Notes",
+      "file_bytes": 8388608
+    },
+    {
+      "id": "pub-002",
+      "title": "Short Stories",
+      "file_bytes": 4194304
+    }
+  ]
+}
+```
+
+`pretty` renders:
+
+```text
+Details
+├── Catalog
+│   └── Name: Example Press
+├──────────────────────────────────────╮
+│ Publications                         │
+├────────────┬─────────┬───────────────┤
+│ File Bytes │ Id      │ Title         │
+├────────────┼─────────┼───────────────┤
+│      8 MiB │ pub-001 │ Field Notes   │
+├────────────┼─────────┼───────────────┤
+│      4 MiB │ pub-002 │ Short Stories │
+╰────────────┴─────────┴───────────────╯
+```
+
 ## Rendering Rules
 
 - Objects become tree branches and scalar fields become leaves.
