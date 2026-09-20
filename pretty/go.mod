@@ -1,4 +1,4 @@
-module github.com/natalie-o-perret/restish-plugin-pretty
+module github.com/natalie-o-perret/restish-plugins/pretty
 
 go 1.25.7
 

@@ -1,4 +1,4 @@
-module github.com/natalie-o-perret/restish-plugin-progress
+module github.com/natalie-o-perret/restish-plugins/progress
 
 go 1.25.3
 

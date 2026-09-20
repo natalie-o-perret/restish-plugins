@@ -1,4 +1,4 @@
-module github.com/natalie-o-perret/restish-plugin-arazzo
+module github.com/natalie-o-perret/restish-plugins/arazzo
 
 go 1.25.7
 

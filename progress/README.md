@@ -1,8 +1,8 @@
 # restish-plugin-progress
 
-[![CI](https://github.com/natalie-o-perret/restish-plugin-progress/actions/workflows/ci.yml/badge.svg)](https://github.com/natalie-o-perret/restish-plugin-progress/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/natalie-o-perret/restish-plugin-progress.svg)](https://pkg.go.dev/github.com/natalie-o-perret/restish-plugin-progress)
-[![License](https://img.shields.io/github/license/natalie-o-perret/restish-plugin-progress)](LICENSE)
+[![CI](https://github.com/natalie-o-perret/restish-plugins/actions/workflows/ci.yml/badge.svg)](https://github.com/natalie-o-perret/restish-plugins/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/natalie-o-perret/restish-plugins/progress.svg)](https://pkg.go.dev/github.com/natalie-o-perret/restish-plugins/progress)
+[![License](https://img.shields.io/github/license/natalie-o-perret/restish-plugins)](LICENSE)
 
 `restish-plugin-progress` adds a streaming `progress` output formatter to
 [Restish](https://rest.sh/).
