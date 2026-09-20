@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+  pull-requests: read
+  security-events: write
+
+jobs:
+  build-test:
+    uses: natalie-o-perret/.github/.github/workflows/reusable-build-test-go.yml@main
+    with:
+      go-versions: '["1.25","1.26"]'
+      go-version-latest: "1.26"
+      coverage-threshold: 70
+  lint:
+    uses: natalie-o-perret/.github/.github/workflows/reusable-lint.yml@main
+  codeql:
+    uses: natalie-o-perret/.github/.github/workflows/reusable-codeql.yml@main
+    with:
+      language: go
