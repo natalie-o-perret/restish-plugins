@@ -1,0 +1,126 @@
+{
+  "requestId": "req-demo-001",
+  "generatedAt": "2026-09-18T20:45:00Z",
+  "APIStatus": "healthy",
+  "release-channel": "stable",
+  "publisher": {
+    "displayName": "Example Press",
+    "genres": ["essays", "fiction", "history", "science"],
+    "limits": {
+      "archive_bytes": 17179869184,
+      "maxPublications": 100
+    },
+    "owner": {
+      "name": "Editorial Team",
+      "contact": {
+        "email": "editorial@example.test",
+        "onCall": true
+      }
+    }
+  },
+  "publications": [
+    {
+      "id": "pub-001",
+      "displayName": "Field Notes",
+      "state": "published",
+      "pages": 320,
+      "file_bytes": 8388608,
+      "formats": ["print", "ebook"]
+    },
+    {
+      "id": "pub-002",
+      "displayName": "Short Stories",
+      "state": "draft",
+      "pages": 144,
+      "file_bytes": 4194304,
+      "formats": ["ebook", "audiobook"]
+    }
+  ],
+  "authors": [
+    {
+      "id": "author-001",
+      "name": "Morgan Lee",
+      "active": true,
+      "country": "Ireland"
+    },
+    {
+      "id": "author-002",
+      "name": "Sam Rivera",
+      "active": false,
+      "country": "Canada"
+    }
+  ],
+  "collections": [
+    {
+      "name": "Essays",
+      "status": "active",
+      "books": [
+        {
+          "id": "book-001",
+          "title": "On Small Things",
+          "pages": 96,
+          "file_bytes": 2097152
+        },
+        {
+          "id": "book-002",
+          "title": "Long Walks",
+          "pages": 184,
+          "file_bytes": 3145728
+        }
+      ],
+      "reviews": [
+        {"reviewer": "Avery", "rating": 5, "status": "approved"},
+        {"reviewer": "Jordan", "rating": 4, "status": "pending"}
+      ]
+    },
+    {
+      "name": "Reference",
+      "status": "editing",
+      "books": [
+        {
+          "id": "book-003",
+          "title": "A Short Atlas",
+          "pages": 256,
+          "file_bytes": 6291456
+        },
+        {
+          "id": "book-004",
+          "title": "Everyday Numbers",
+          "pages": 208,
+          "file_bytes": 5242880
+        }
+      ],
+      "reviews": [
+        {"reviewer": "Casey", "rating": 3, "status": "changes-requested"},
+        {"reviewer": "Riley", "rating": 5, "status": "approved"}
+      ]
+    }
+  ],
+  "auditEvents": [
+    {
+      "eventId": "evt-001",
+      "action": "publication.created",
+      "actor": {
+        "type": "user",
+        "name": "Alex"
+      },
+      "changes": [
+        {"field": "state", "before": null, "after": "draft"},
+        {"field": "pages", "before": 0, "after": 144}
+      ]
+    },
+    {
+      "eventId": "evt-002",
+      "action": "author.updated",
+      "actor": {
+        "type": "service-account",
+        "name": "catalogue-sync"
+      },
+      "changes": [
+        {"field": "active", "before": false, "after": true},
+        {"field": "country", "before": "", "after": "Canada"}
+      ]
+    }
+  ],
+  "alerts": []
+}
