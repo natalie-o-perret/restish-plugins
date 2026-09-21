@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/jedib0t/go-pretty/v6 v6.8.3
 	github.com/rest-sh/restish/v2 v2.3.0
+	golang.org/x/term v0.41.0
 )
 
 require (

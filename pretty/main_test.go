@@ -43,7 +43,7 @@ func TestPrettyRendersCollections(t *testing.T) {
 		{"id": ids[0], "sequence": 1, "formats": formats},
 		{"id": ids[1], "sequence": 2},
 		{"id": ids[2], "sequence": 3},
-	}); err != nil {
+	}, 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range ids {
@@ -54,6 +54,25 @@ func TestPrettyRendersCollections(t *testing.T) {
 	for _, format := range formats {
 		if !strings.Contains(wrapped.String(), format.(string)) {
 			t.Fatalf("wrapped table omitted format %q:\n%s", format, wrapped.String())
+		}
+	}
+}
+
+func TestPrettyFitsTableToTerminalWidth(t *testing.T) {
+	var out strings.Builder
+	if err := renderRows(&out, "", []map[string]any{
+		{"id": "publication-one", "title": "A deliberately long publication title"},
+	}, 32); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if width := len([]rune(line)); width > 32 {
+			t.Fatalf("rendered line is %d columns wide, want at most 32:\n%s", width, out.String())
+		}
+	}
+	for _, expected := range []string{"deliberately", "publication", "title"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("width-constrained table omitted %q:\n%s", expected, out.String())
 		}
 	}
 }
