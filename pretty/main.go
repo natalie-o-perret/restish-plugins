@@ -311,7 +311,11 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 	}
 
 	byteColumns := inferByteColumns([]map[string]any{{name: value}})
-	lines := strings.Split(text.WrapSoft(cell(name, value, byteColumns), maxCellWidth), "\n")
+	cellWidth := maxCellWidth
+	if available := width - utf8.RuneCountInString(prefix+connector+title(name)+": "); width > 0 && available > 0 && available < cellWidth {
+		cellWidth = available
+	}
+	lines := strings.Split(text.WrapSoft(cell(name, value, byteColumns), cellWidth), "\n")
 	fmt.Fprintf(out, "%s%s%s: %s\n", prefix, connector, title(name), lines[0])
 	for _, line := range lines[1:] {
 		fmt.Fprintf(out, "%s    %s\n", childPrefix, line)

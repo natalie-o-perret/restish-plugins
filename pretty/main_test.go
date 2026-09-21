@@ -77,6 +77,20 @@ func TestPrettyFitsTableToTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestPrettyFitsTreeLeavesToTerminalWidth(t *testing.T) {
+	var out strings.Builder
+	if err := renderTree(&out, map[string]any{
+		"generated_at": "2026-09-18T20:45:00Z",
+	}, 24); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if width := len([]rune(line)); width > 24 {
+			t.Fatalf("rendered line is %d columns wide, want at most 24:\n%s", width, out.String())
+		}
+	}
+}
+
 func TestPrettyRendersNestedStructures(t *testing.T) {
 	body := map[string]any{
 		"catalog": map[string]any{

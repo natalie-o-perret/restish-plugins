@@ -93,8 +93,8 @@ Details
 - Object keys render deterministically with scalar fields before nested fields,
   then alphabetically within each group.
 - Array order is preserved.
-- Tables wrap to the current terminal width. Redirected output keeps its natural
-  width.
+- Tables and tree values wrap to the current terminal width. Redirected output
+  keeps its natural width.
 - Snake case, spinal case, camel case, Pascal case, and source acronyms are
   converted to readable titles without a field-name dictionary.
 - Numeric `bytes` and `*_bytes` fields use IEC units. `memory` and `*_memory`
