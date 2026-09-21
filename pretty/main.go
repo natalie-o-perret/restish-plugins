@@ -16,6 +16,7 @@ import (
 	prettytable "github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/rest-sh/restish/v2/plugin"
+	"golang.org/x/term"
 )
 
 const maxCellWidth = 48
@@ -87,7 +88,7 @@ func (f *formatter) Handle(req plugin.FormatterRequest) error {
 func renderPretty(w io.Writer, value any) error {
 	value = normalizeRoot(value)
 	if requiresTree(value) {
-		return renderTree(w, value)
+		return renderTree(w, value, terminalWidth(w))
 	}
 	metadata, sections, ok := tableSections(value)
 	if !ok {
@@ -121,7 +122,7 @@ func renderPretty(w io.Writer, value any) error {
 			}
 			continue
 		}
-		if err := renderRows(w, title(section.title), section.rows); err != nil {
+		if err := renderRows(w, title(section.title), section.rows, terminalWidth(w)); err != nil {
 			return err
 		}
 	}
@@ -207,19 +208,19 @@ func rowsAreFlat(rows []map[string]any) bool {
 	return true
 }
 
-func renderTree(w io.Writer, value any) error {
+func renderTree(w io.Writer, value any, width int) error {
 	var out strings.Builder
 	switch data := value.(type) {
 	case map[string]any:
 		out.WriteString("Details\n")
-		if err := renderTreeObject(&out, data, ""); err != nil {
+		if err := renderTreeObject(&out, data, "", width); err != nil {
 			return err
 		}
 	case []any:
 		rows, _ := recordCollection(data)
 		out.WriteString("Items\n")
 		for i, row := range rows {
-			if err := renderTreeNode(&out, fmt.Sprintf("Item %d", i+1), row, "", i == len(rows)-1); err != nil {
+			if err := renderTreeNode(&out, fmt.Sprintf("Item %d", i+1), row, "", i == len(rows)-1, width); err != nil {
 				return err
 			}
 		}
@@ -228,7 +229,7 @@ func renderTree(w io.Writer, value any) error {
 	return err
 }
 
-func renderTreeObject(out *strings.Builder, object map[string]any, prefix string) error {
+func renderTreeObject(out *strings.Builder, object map[string]any, prefix string, width int) error {
 	keys := make([]string, 0, len(object))
 	for key := range object {
 		keys = append(keys, key)
@@ -241,7 +242,7 @@ func renderTreeObject(out *strings.Builder, object map[string]any, prefix string
 		return keys[i] < keys[j]
 	})
 	for i, key := range keys {
-		if err := renderTreeNode(out, key, object[key], prefix, i == len(keys)-1); err != nil {
+		if err := renderTreeNode(out, key, object[key], prefix, i == len(keys)-1, width); err != nil {
 			return err
 		}
 	}
@@ -260,7 +261,7 @@ func treeLeaf(value any) bool {
 	}
 }
 
-func renderTreeNode(out *strings.Builder, name string, value any, prefix string, last bool) error {
+func renderTreeNode(out *strings.Builder, name string, value any, prefix string, last bool, width int) error {
 	connector, childPrefix := "├── ", prefix+"│   "
 	if last {
 		connector, childPrefix = "└── ", prefix+"    "
@@ -273,7 +274,7 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 			return nil
 		}
 		fmt.Fprintf(out, "%s%s%s\n", prefix, connector, title(name))
-		return renderTreeObject(out, data, childPrefix)
+		return renderTreeObject(out, data, childPrefix, width)
 	case []any:
 		if rows, ok := recordCollection(data); ok {
 			if len(rows) == 0 {
@@ -283,7 +284,7 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 			if !rowsAreFlat(rows) {
 				fmt.Fprintf(out, "%s%s%s\n", prefix, connector, title(name))
 				for i, row := range rows {
-					if err := renderTreeNode(out, fmt.Sprintf("Item %d", i+1), row, childPrefix, i == len(rows)-1); err != nil {
+					if err := renderTreeNode(out, fmt.Sprintf("Item %d", i+1), row, childPrefix, i == len(rows)-1, width); err != nil {
 						return err
 					}
 				}
@@ -291,7 +292,7 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 			}
 
 			var table strings.Builder
-			if err := renderRows(&table, title(name), rows); err != nil {
+			if err := renderRows(&table, title(name), rows, width-utf8.RuneCountInString(prefix)); err != nil {
 				return err
 			}
 			rendered := strings.TrimSuffix(strings.TrimPrefix(table.String(), "Details\n"), "\n")
@@ -310,7 +311,11 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 	}
 
 	byteColumns := inferByteColumns([]map[string]any{{name: value}})
-	lines := strings.Split(text.WrapSoft(cell(name, value, byteColumns), maxCellWidth), "\n")
+	cellWidth := maxCellWidth
+	if available := width - utf8.RuneCountInString(prefix+connector+title(name)+": "); width > 0 && available > 0 && available < cellWidth {
+		cellWidth = available
+	}
+	lines := strings.Split(text.WrapSoft(cell(name, value, byteColumns), cellWidth), "\n")
 	fmt.Fprintf(out, "%s%s%s: %s\n", prefix, connector, title(name), lines[0])
 	for _, line := range lines[1:] {
 		fmt.Fprintf(out, "%s    %s\n", childPrefix, line)
@@ -318,7 +323,7 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 	return nil
 }
 
-func renderRows(w io.Writer, tableTitle string, rows []map[string]any) error {
+func renderRows(w io.Writer, tableTitle string, rows []map[string]any, width int) error {
 	byteColumns := inferByteColumns(rows)
 	columns := collectColumns(rows)
 	constants, columns := extractConstants(rows, columns)
@@ -350,11 +355,15 @@ func renderRows(w io.Writer, tableTitle string, rows []map[string]any) error {
 		tw.SetTitle(tableTitle)
 	}
 	columnConfigs := make([]prettytable.ColumnConfig, len(columns))
+	cellWidth := maxCellWidth
+	if available := (width - 3*len(columns) - 1) / len(columns); width > 0 && available > 0 && available < cellWidth {
+		cellWidth = available
+	}
 	for i, column := range columns {
 		columnConfigs[i] = prettytable.ColumnConfig{
 			Align:            numericColumnAlignment(rows, column),
 			Number:           i + 1,
-			WidthMax:         maxCellWidth,
+			WidthMax:         cellWidth,
 			WidthMaxEnforcer: text.WrapSoft,
 		}
 	}
@@ -378,6 +387,18 @@ func renderRows(w io.Writer, tableTitle string, rows []map[string]any) error {
 	}
 	_, err := fmt.Fprintln(w, rendered)
 	return err
+}
+
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(interface{ Fd() uintptr })
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return 0
+	}
+	width, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return width
 }
 
 func numericColumnAlignment(rows []map[string]any, column string) text.Align {
