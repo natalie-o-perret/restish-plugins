@@ -69,20 +69,38 @@ wanted.
 
 ## Customise
 
-The defaults use a 24-character Unicode bar with a red-to-pink gradient.
-Environment variables can change the style without changing event payloads:
+The defaults use a 24-character Unicode bar with a red-to-pink gradient. Set a
+persistent style under `plugins.progress` in `restish.json`:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `RSH_PROGRESS_WIDTH` | `24` | Bar width from 1 to 200 |
-| `RSH_PROGRESS_COLOR` | empty | Solid colour overriding the gradient |
-| `RSH_PROGRESS_COLOR_START` | `#ff3b30` | Gradient start colour |
-| `RSH_PROGRESS_COLOR_END` | `#ff2d95` | Gradient end colour |
-| `RSH_PROGRESS_FILL` | `█` | Filled character |
-| `RSH_PROGRESS_HEAD` | `█` | Leading character |
-| `RSH_PROGRESS_EMPTY` | `░` | Empty character |
-| `RSH_PROGRESS_START` | empty | Bar prefix |
-| `RSH_PROGRESS_END` | empty | Bar suffix |
+```json
+{
+  "plugins": {
+    "progress": {
+      "width": 32,
+      "color_start": "#7c3aed",
+      "color_end": "#22d3ee",
+      "fill": "━",
+      "head": "╺",
+      "empty": "─"
+    }
+  }
+}
+```
+
+Configuration accepts the following fields. The corresponding environment
+variables override them for a single invocation:
+
+| Field | Environment variable | Default | Purpose |
+| --- | --- | --- | --- |
+| `width` | `RSH_PROGRESS_WIDTH` | `24` | Bar width from 1 to 200 |
+| `color` | `RSH_PROGRESS_COLOR` | empty | Solid colour overriding the gradient |
+| `color_start` | `RSH_PROGRESS_COLOR_START` | `#ff3b30` | Gradient start colour |
+| `color_end` | `RSH_PROGRESS_COLOR_END` | `#ff2d95` | Gradient end colour |
+| `fill` | `RSH_PROGRESS_FILL` | `█` | Filled character |
+| `head` | `RSH_PROGRESS_HEAD` | `█` | Leading character |
+| `empty` | `RSH_PROGRESS_EMPTY` | `░` | Empty character |
+| `start` | `RSH_PROGRESS_START` | empty | Bar prefix |
+| `end` | `RSH_PROGRESS_END` | empty | Bar suffix |
 
 Colours may use `#RRGGBB` or `black`, `blue`, `cyan`, `green`, `magenta`,
 `red`, `white`, or `yellow`. The `c` in `--rsh-print bc` enables colour.
