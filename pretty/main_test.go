@@ -236,6 +236,33 @@ func TestPrettyKeepsAmbiguousNestedRecordsAsTree(t *testing.T) {
 	}
 }
 
+func TestTableModeAllowsOptionalNestedRecordFields(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40}, "platform": "linux"},
+		map[string]any{"id": "node-b", "stats": map[string]any{"cpu": 60}},
+	}
+	rows, _ := recordCollection(body)
+	if _, ok := tabularRows(rows, 120, nestedRecordsAuto); ok {
+		t.Fatal("auto mode should reject optional nested-record fields")
+	}
+	if _, ok := tabularRows(rows, 120, nestedRecordsTable); !ok {
+		t.Fatal("table mode should allow optional nested-record fields")
+	}
+
+	var out strings.Builder
+	if err := renderPrettyWithMode(&out, body, nestedRecordsTable); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Platform", "Stats Cpu", "linux", "node-a", "node-b"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("table output omitted %q:\n%s", expected, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "Item 1") {
+		t.Fatalf("table mode rendered a tree:\n%s", out.String())
+	}
+}
+
 func TestFormatterNestedRecordsConfig(t *testing.T) {
 	body := []any{
 		map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40, "memory": map[string]any{"total": uint64(8 << 30)}}},
