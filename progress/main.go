@@ -52,6 +52,27 @@ type progress struct {
 	Message string `json:"message"`
 }
 
+type formatterRequest struct {
+	Type         string                   `cbor:"type"`
+	Format       string                   `cbor:"format"`
+	Color        bool                     `cbor:"color,omitempty"`
+	Event        string                   `cbor:"event"`
+	PluginConfig json.RawMessage          `cbor:"plugin_config,omitempty"`
+	Response     plugin.FormatterResponse `cbor:"response"`
+}
+
+type barStyleConfig struct {
+	Width      *int    `json:"width"`
+	Color      *string `json:"color"`
+	ColorStart *string `json:"color_start"`
+	ColorEnd   *string `json:"color_end"`
+	Fill       *string `json:"fill"`
+	Head       *string `json:"head"`
+	Empty      *string `json:"empty"`
+	Start      *string `json:"start"`
+	End        *string `json:"end"`
+}
+
 type formatter struct {
 	w        io.Writer
 	tty      bool
@@ -73,14 +94,10 @@ func main() {
 		return
 	}
 
-	style, err := barStyleFromEnv()
-	if err != nil {
-		fail(err)
-	}
-	f := &formatter{w: os.Stdout, style: style}
+	f := &formatter{w: os.Stdout, style: defaultBarStyle()}
 	dec := plugin.NewDecoder(os.Stdin)
 	for {
-		var req plugin.FormatterRequest
+		var req formatterRequest
 		if err := dec.ReadMessage(&req); err != nil {
 			fail(fmt.Errorf("read formatter request: %w", err))
 		}
@@ -96,9 +113,16 @@ func main() {
 	}
 }
 
-func (f *formatter) Handle(req plugin.FormatterRequest) error {
+func (f *formatter) Handle(req formatterRequest) error {
 	switch req.Event {
-	case "start", "item":
+	case "start":
+		style, err := barStyleFromConfig(req.PluginConfig)
+		if err != nil {
+			return err
+		}
+		f.style = style
+		fallthrough
+	case "item":
 		if req.Color {
 			f.tty = true
 		}
@@ -269,8 +293,62 @@ func progressDescription(p progress) string {
 	return description
 }
 
-func barStyleFromEnv() (barStyle, error) {
+func barStyleFromConfig(raw json.RawMessage) (barStyle, error) {
 	style := defaultBarStyle()
+	if len(raw) != 0 {
+		var config *barStyleConfig
+		if err := json.Unmarshal(raw, &config); err != nil || config == nil {
+			if err == nil {
+				return barStyle{}, fmt.Errorf("progress config must be a JSON object")
+			}
+			return barStyle{}, fmt.Errorf("invalid progress config: %w", err)
+		}
+		if config.Width != nil {
+			if *config.Width < 1 || *config.Width > 200 {
+				return barStyle{}, fmt.Errorf("progress config width must be an integer from 1 to 200")
+			}
+			style.Width = *config.Width
+		}
+		if config.Color != nil {
+			parsed, err := parseColor(*config.Color)
+			if err != nil {
+				return barStyle{}, fmt.Errorf("progress config color: %w", err)
+			}
+			style.ColorStart, style.ColorEnd = parsed, parsed
+		}
+		for _, value := range []struct {
+			name   string
+			value  *string
+			target *rgb
+		}{
+			{"color_start", config.ColorStart, &style.ColorStart},
+			{"color_end", config.ColorEnd, &style.ColorEnd},
+		} {
+			if value.value == nil {
+				continue
+			}
+			parsed, err := parseColor(*value.value)
+			if err != nil {
+				return barStyle{}, fmt.Errorf("progress config %s: %w", value.name, err)
+			}
+			*value.target = parsed
+		}
+		for _, value := range []struct {
+			value  *string
+			target *string
+		}{
+			{config.Fill, &style.Fill},
+			{config.Head, &style.Head},
+			{config.Empty, &style.Empty},
+			{config.Start, &style.Start},
+			{config.End, &style.End},
+		} {
+			if value.value != nil {
+				*value.target = *value.value
+			}
+		}
+	}
+
 	if value := os.Getenv("RSH_PROGRESS_WIDTH"); value != "" {
 		width, err := strconv.Atoi(value)
 		if err != nil || width < 1 || width > 200 {
@@ -309,7 +387,7 @@ func barStyleFromEnv() (barStyle, error) {
 		}
 	}
 	if style.Fill == "" || style.Head == "" || style.Empty == "" {
-		return barStyle{}, fmt.Errorf("RSH_PROGRESS_FILL, RSH_PROGRESS_HEAD, and RSH_PROGRESS_EMPTY cannot be empty")
+		return barStyle{}, fmt.Errorf("progress fill, head, and empty cannot be empty")
 	}
 	return style, nil
 }
