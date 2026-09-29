@@ -38,6 +38,28 @@ $ restish get https://api.example.test/catalog -o pretty --rsh-print b
 `-o pretty` selects the formatter. `--rsh-print b` prints only the rendered
 response body and omits HTTP headers.
 
+## Configure
+
+Set the nested-record mode under `plugins.pretty` in `restish.json`:
+
+```json
+{
+  "plugins": {
+    "pretty": {
+      "nested_records": "auto"
+    }
+  }
+}
+```
+
+- `auto` uses a table when the records have a consistent, shallow shape and
+  the terminal has enough room. This is the default.
+- `table` uses a table whenever those records can be flattened without losing
+  information, regardless of terminal width.
+- `tree` keeps nested records as ordered `Item N` branches.
+
+Hosts that do not forward formatter plugin configuration use `auto`.
+
 ## Example
 
 Given this response body:
@@ -83,7 +105,9 @@ Details
 
 - Objects become tree branches and scalar fields become leaves.
 - Arrays of flat objects become titled tables.
-- Arrays containing nested objects become ordered `Item N` branches.
+- Repeated records with shallow, scalar-only nested objects become tables with
+  their object paths as column headings.
+- Deep objects and nested record collections become ordered `Item N` branches.
 - Scalar arrays remain complete and wrap across table lines when needed.
 - Multiple record collections render separately and are never flattened
   together.

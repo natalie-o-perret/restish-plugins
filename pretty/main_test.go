@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/rest-sh/restish/v2/plugin"
 )
 
 func TestPrettyRendersCollections(t *testing.T) {
@@ -120,6 +124,259 @@ func TestPrettyRendersNestedStructures(t *testing.T) {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("output omitted %q:\n%s", expected, out.String())
 		}
+	}
+}
+
+func TestPrettyRendersShallowNestedRecordsAsTable(t *testing.T) {
+	body := []any{
+		map[string]any{
+			"id": "node-a", "name": "Alpha", "tags": []any{},
+			"capacity": map[string]any{
+				"cpu":    map[string]any{"total": 100, "used": 40},
+				"memory": map[string]any{"total": uint64(8 << 30), "used": uint64(4 << 30)},
+			},
+			"cluster": map[string]any{"name": "group-a"},
+		},
+		map[string]any{
+			"id": "node-b", "name": "Beta", "tags": []any{"reserved"},
+			"capacity": map[string]any{
+				"cpu":    map[string]any{"total": 120, "used": 60},
+				"memory": map[string]any{"total": uint64(16 << 30), "used": uint64(6 << 30)},
+			},
+			"cluster": map[string]any{"name": "group-b"},
+		},
+	}
+	rows, _ := recordCollection(body)
+	if _, ok := tabularRows(rows, 120, nestedRecordsAuto); !ok {
+		t.Fatal("nested rows should be tabular at 120 columns")
+	}
+	if _, ok := tabularRows(rows, 70, nestedRecordsAuto); !ok {
+		t.Fatal("nested rows should remain tabular at 70 columns")
+	}
+	if _, ok := tabularRows(rows, 55, nestedRecordsAuto); ok {
+		t.Fatal("nested rows should remain a tree when columns cannot stay readable")
+	}
+	if _, ok := tabularRows(rows, 55, nestedRecordsTable); !ok {
+		t.Fatal("table mode should ignore the automatic width threshold")
+	}
+	if _, ok := tabularRows(rows, 120, nestedRecordsTree); ok {
+		t.Fatal("tree mode should reject nested tables")
+	}
+
+	var out strings.Builder
+	if err := renderPretty(&out, body); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Capacity Cpu Total", "Capacity Memory Used", "Cluster Name",
+		"node-a", "node-b", "4 GiB", "6 GiB", "[]", "reserved",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("output omitted %q:\n%s", expected, out.String())
+		}
+	}
+	for _, unwanted := range []string{"Items", "Item 1", `{"cpu"`} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("output contains tree or JSON marker %q:\n%s", unwanted, out.String())
+		}
+	}
+	if strings.Index(out.String(), "node-a") > strings.Index(out.String(), "node-b") {
+		t.Fatalf("table did not preserve array order:\n%s", out.String())
+	}
+}
+
+func TestPrettyKeepsDeepNestedRecordsAsTree(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "node-a", "metrics": map[string]any{"cpu": map[string]any{"usage": map[string]any{"value": 40}}}},
+		map[string]any{"id": "node-b", "metrics": map[string]any{"cpu": map[string]any{"usage": map[string]any{"value": 60}}}},
+	}
+
+	var out strings.Builder
+	if err := renderPretty(&out, body); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Items", "Item 1", "Item 2", "Metrics", "Usage"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("tree output omitted %q:\n%s", expected, out.String())
+		}
+	}
+}
+
+func TestPrettyKeepsAmbiguousNestedRecordsAsTree(t *testing.T) {
+	tests := map[string][]any{
+		"missing field": {
+			map[string]any{"id": "node-a", "stats": map[string]any{"cpu": nil}},
+			map[string]any{"id": "node-b"},
+		},
+		"colliding path": {
+			map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40}},
+			map[string]any{"id": "node-b", "stats.cpu": 60},
+		},
+		"identical rows": {
+			map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40}},
+			map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40}},
+		},
+		"empty object and scalar": {
+			map[string]any{"id": "node-a", "stats": map[string]any{}},
+			map[string]any{"id": "node-b", "stats": "unknown"},
+		},
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			var out strings.Builder
+			if err := renderPretty(&out, body); err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range []string{"Items", "Item 1", "Item 2"} {
+				if !strings.Contains(out.String(), expected) {
+					t.Fatalf("tree output omitted %q:\n%s", expected, out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestFormatterNestedRecordsConfig(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40, "memory": map[string]any{"total": uint64(8 << 30)}}},
+		map[string]any{"id": "node-b", "stats": map[string]any{"cpu": 60, "memory": map[string]any{"total": uint64(16 << 30)}}},
+	}
+	var out strings.Builder
+	f := formatter{w: &out, nestedRecords: nestedRecordsAuto}
+	if err := f.Handle(formatterRequest{
+		Event:        "start",
+		PluginConfig: json.RawMessage(`{"nested_records":"tree"}`),
+		Response:     plugin.FormatterResponse{Body: body},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Handle(formatterRequest{Event: "end"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Items\n├── Item 1") {
+		t.Fatalf("tree config was not applied:\n%s", out.String())
+	}
+	for _, expected := range []string{"8 GiB", "16 GiB"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("tree output omitted memory value %q:\n%s", expected, out.String())
+		}
+	}
+
+	if err := (&formatter{w: &strings.Builder{}}).Handle(formatterRequest{
+		Event:        "start",
+		PluginConfig: json.RawMessage(`{"nested_records":"wide"}`),
+	}); err == nil {
+		t.Fatal("invalid nested_records mode was accepted")
+	}
+}
+
+func TestPrettyPreservesIdenticalFlatRows(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "same"},
+		map[string]any{"id": "same"},
+	}
+
+	var out strings.Builder
+	if err := renderPretty(&out, body); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Items", "Item 1", "Item 2"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("output omitted %q:\n%s", expected, out.String())
+		}
+	}
+}
+
+func TestPrettyUsesTreeWhenMetadataWouldOverflow(t *testing.T) {
+	body := map[string]any{
+		"description": strings.Repeat("wide ", 8),
+		"nodes": []any{
+			map[string]any{"id": "a"},
+			map[string]any{"id": "b"},
+		},
+	}
+	if !requiresTree(body, 24, nestedRecordsAuto) {
+		t.Fatal("wide root metadata should select tree output")
+	}
+}
+
+func TestPrettyUsesTreeWhenFlatConstantsWouldOverflow(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "a", "description": strings.Repeat("wide ", 8)},
+		map[string]any{"id": "b", "description": strings.Repeat("wide ", 8)},
+	}
+	if !requiresTree(body, 24, nestedRecordsAuto) {
+		t.Fatal("wide table constants should select tree output")
+	}
+}
+
+func TestTreeByteInferenceUsesWholeCollection(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "a", "capacity": map[string]any{"memory": map[string]any{"total": uint64(8 << 30)}}},
+		map[string]any{"id": "b", "capacity": map[string]any{"memory": map[string]any{"total": 512}}},
+	}
+
+	var out strings.Builder
+	if err := renderPrettyWithMode(&out, body, nestedRecordsTree); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "8 GiB") || !strings.Contains(out.String(), "8589934592") {
+		t.Fatalf("tree inferred bytes from only one row:\n%s", out.String())
+	}
+}
+
+func TestTreeWidthUsesDisplayCellsAndContinuationPrefix(t *testing.T) {
+	var out strings.Builder
+	if err := renderTree(&out, map[string]any{"x": strings.Repeat("a", 30)}, 12); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if width := text.StringWidth(line); width > 12 {
+			t.Fatalf("rendered line is %d columns wide, want at most 12:\n%s", width, out.String())
+		}
+	}
+}
+
+func TestTreeDoesNotInterpretLiteralPathSeparator(t *testing.T) {
+	body := map[string]any{
+		"details":           map[string]any{"active": true},
+		"memory\x1fpercent": uint64(2 << 20),
+	}
+	var out strings.Builder
+	if err := renderPretty(&out, body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "2 MiB") || !strings.Contains(out.String(), "2097152") {
+		t.Fatalf("literal key was interpreted as a nested memory path:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := renderPretty(&out, map[string]any{
+		"memory": map[string]any{"\x1ftotal": uint64(8 << 30)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "8 GiB") {
+		t.Fatalf("separator at a path boundary hid the memory ancestor:\n%s", out.String())
+	}
+}
+
+func TestNestedTableModeIgnoresConstantWidth(t *testing.T) {
+	rows := []map[string]any{
+		{"id": "a", "description": strings.Repeat("wide ", 8), "stats": map[string]any{"cpu": 40}},
+		{"id": "b", "description": strings.Repeat("wide ", 8), "stats": map[string]any{"cpu": 60}},
+	}
+	if _, ok := tabularRows(rows, 24, nestedRecordsAuto); ok {
+		t.Fatal("auto mode accepted an overflowing constant")
+	}
+	if _, ok := tabularRows(rows, 24, nestedRecordsTable); !ok {
+		t.Fatal("table mode applied the automatic constant-width threshold")
+	}
+}
+
+func TestByteInferenceDoesNotBroadenFlatColumnNames(t *testing.T) {
+	if inferByteColumns([]map[string]any{{"network_bytes_count": 42}})["network_bytes_count"] {
+		t.Fatal("network_bytes_count should not be inferred as bytes")
 	}
 }
 
