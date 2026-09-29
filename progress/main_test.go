@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestFormatterStreamsProgress(t *testing.T) {
 		map[string]any{"id": "deploy", "current": 1, "total": 2, "message": "first"},
 		map[string]any{"id": "deploy", "state": "success", "current": 2, "total": 2},
 	} {
-		if err := f.Handle(plugin.FormatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,13 +55,13 @@ func TestRenderUsesCustomUnit(t *testing.T) {
 func TestFormatterRedrawsTTYLine(t *testing.T) {
 	var out bytes.Buffer
 	f := &formatter{w: &out, style: defaultBarStyle()}
-	if err := f.Handle(plugin.FormatterRequest{Event: "start", Color: true}); err != nil {
+	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Handle(plugin.FormatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: map[string]any{"label": "workflow"}}}); err != nil {
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: map[string]any{"label": "workflow"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Handle(plugin.FormatterRequest{Event: "end"}); err != nil {
+	if err := f.Handle(formatterRequest{Event: "end"}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := out.String(), "\r\x1b[2Kworkflow  running\n"; got != want {
@@ -75,15 +76,20 @@ func TestDecodeProgressRejectsIncompleteCount(t *testing.T) {
 	}
 }
 
-func TestBarStyleFromEnv(t *testing.T) {
-	t.Setenv("RSH_PROGRESS_WIDTH", "4")
+func TestBarStyleFromConfigAndEnv(t *testing.T) {
+	t.Setenv("RSH_PROGRESS_WIDTH", "5")
 	t.Setenv("RSH_PROGRESS_COLOR", "magenta")
-	t.Setenv("RSH_PROGRESS_FILL", "=")
 	t.Setenv("RSH_PROGRESS_HEAD", ">")
-	t.Setenv("RSH_PROGRESS_EMPTY", ".")
-	t.Setenv("RSH_PROGRESS_START", "[")
-	t.Setenv("RSH_PROGRESS_END", "]")
-	style, err := barStyleFromEnv()
+	style, err := barStyleFromConfig(json.RawMessage(`{
+		"width": 4,
+		"color_start": "#7c3aed",
+		"color_end": "#22d3ee",
+		"fill": "=",
+		"head": "+",
+		"empty": ".",
+		"start": "[",
+		"end": "]"
+	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,15 +101,28 @@ func TestBarStyleFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "50% [=>..]  work  1/2 steps  running"; got != want {
+	if want := "50% [=>...]  work  1/2 steps  running"; got != want {
 		t.Fatalf("render() = %q, want %q", got, want)
 	}
 }
 
 func TestBarStyleFromEnvRejectsInvalidWidth(t *testing.T) {
 	t.Setenv("RSH_PROGRESS_WIDTH", "wide")
-	if _, err := barStyleFromEnv(); err == nil {
+	if _, err := barStyleFromConfig(nil); err == nil {
 		t.Fatal("expected invalid width error")
+	}
+}
+
+func TestBarStyleFromConfigRejectsInvalidValues(t *testing.T) {
+	for _, config := range []string{
+		`null`,
+		`{"width":0}`,
+		`{"color":"orange"}`,
+		`{"fill":""}`,
+	} {
+		if _, err := barStyleFromConfig(json.RawMessage(config)); err == nil {
+			t.Fatalf("config %s was accepted", config)
+		}
 	}
 }
 
