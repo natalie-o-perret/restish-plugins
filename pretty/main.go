@@ -19,11 +19,35 @@ import (
 	"golang.org/x/term"
 )
 
-const maxCellWidth = 48
+const (
+	maxCellWidth              = 48
+	maxNestedTableDepth       = 2
+	maxNestedTableColumns     = 16
+	minNestedTableColumnWidth = 4
+	nestedColumnPathPrefix    = "\xff"
+)
+
+type nestedRecordsMode string
+
+const (
+	nestedRecordsAuto  nestedRecordsMode = "auto"
+	nestedRecordsTable nestedRecordsMode = "table"
+	nestedRecordsTree  nestedRecordsMode = "tree"
+)
+
+type formatterRequest struct {
+	Type         string                   `cbor:"type"`
+	Format       string                   `cbor:"format"`
+	Color        bool                     `cbor:"color,omitempty"`
+	Event        string                   `cbor:"event"`
+	PluginConfig json.RawMessage          `cbor:"plugin_config,omitempty"`
+	Response     plugin.FormatterResponse `cbor:"response"`
+}
 
 type formatter struct {
-	w      io.Writer
-	values []any
+	w             io.Writer
+	values        []any
+	nestedRecords nestedRecordsMode
 }
 
 type tableSection struct {
@@ -44,10 +68,10 @@ func main() {
 		return
 	}
 
-	f := &formatter{w: os.Stdout}
+	f := &formatter{w: os.Stdout, nestedRecords: nestedRecordsAuto}
 	dec := plugin.NewDecoder(os.Stdin)
 	for {
-		var req plugin.FormatterRequest
+		var req formatterRequest
 		if err := dec.ReadMessage(&req); err != nil {
 			fail(fmt.Errorf("read formatter request: %w", err))
 		}
@@ -63,9 +87,19 @@ func main() {
 	}
 }
 
-func (f *formatter) Handle(req plugin.FormatterRequest) error {
+func (f *formatter) Handle(req formatterRequest) error {
 	switch req.Event {
-	case "start", "item":
+	case "start":
+		mode, err := parseNestedRecordsMode(req.PluginConfig)
+		if err != nil {
+			return err
+		}
+		f.nestedRecords = mode
+		if req.Response.Body != nil {
+			f.values = append(f.values, req.Response.Body)
+		}
+		return nil
+	case "item":
 		if req.Response.Body != nil {
 			f.values = append(f.values, req.Response.Body)
 		}
@@ -79,18 +113,23 @@ func (f *formatter) Handle(req plugin.FormatterRequest) error {
 		if len(f.values) == 1 {
 			value = f.values[0]
 		}
-		return renderPretty(f.w, value)
+		return renderPrettyWithMode(f.w, value, f.nestedRecords)
 	default:
 		return fmt.Errorf("unsupported formatter event %q", req.Event)
 	}
 }
 
 func renderPretty(w io.Writer, value any) error {
+	return renderPrettyWithMode(w, value, nestedRecordsAuto)
+}
+
+func renderPrettyWithMode(w io.Writer, value any, mode nestedRecordsMode) error {
 	value = normalizeRoot(value)
-	if requiresTree(value) {
-		return renderTree(w, value, terminalWidth(w))
+	width := terminalWidth(w)
+	if requiresTree(value, width, mode) {
+		return renderTreeWithMode(w, value, width, mode)
 	}
-	metadata, sections, ok := tableSections(value)
+	metadata, sections, ok := tableSections(value, width, mode)
 	if !ok {
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
@@ -122,11 +161,35 @@ func renderPretty(w io.Writer, value any) error {
 			}
 			continue
 		}
-		if err := renderRows(w, title(section.title), section.rows, terminalWidth(w)); err != nil {
+		if err := renderRows(w, title(section.title), section.rows, width); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func parseNestedRecordsMode(config json.RawMessage) (nestedRecordsMode, error) {
+	if len(config) == 0 {
+		return nestedRecordsAuto, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(config, &object); err != nil {
+		return "", fmt.Errorf("pretty config must be a JSON object: %w", err)
+	}
+	value, ok := object["nested_records"]
+	if !ok {
+		return nestedRecordsAuto, nil
+	}
+	var mode nestedRecordsMode
+	if err := json.Unmarshal(value, &mode); err != nil {
+		return "", fmt.Errorf("pretty config nested_records must be auto, table, or tree")
+	}
+	switch mode {
+	case nestedRecordsAuto, nestedRecordsTable, nestedRecordsTree:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("pretty config nested_records must be auto, table, or tree")
+	}
 }
 
 func normalizeRoot(value any) any {
@@ -160,16 +223,19 @@ func normalizeRoot(value any) any {
 	return merged
 }
 
-func requiresTree(value any) bool {
+func requiresTree(value any, width int, mode nestedRecordsMode) bool {
 	switch data := value.(type) {
 	case map[string]any:
-		for _, candidate := range data {
+		metadata := map[string]any{}
+		hasSections := false
+		for key, candidate := range data {
 			switch nested := candidate.(type) {
 			case map[string]any:
 				return true
 			case []any:
 				if rows, ok := recordCollection(nested); ok {
-					if !rowsAreFlat(rows) {
+					hasSections = true
+					if _, ok := tabularRows(rows, width, mode); !ok {
 						return true
 					}
 					continue
@@ -181,46 +247,168 @@ func requiresTree(value any) bool {
 					}
 				}
 			}
+			metadata[key] = candidate
+		}
+		if hasSections && width > 0 && text.StringWidth(formatMetadata(metadata, inferByteColumns([]map[string]any{metadata}))) > width {
+			return true
 		}
 	case []any:
 		if rows, ok := recordCollection(data); ok {
-			return !rowsAreFlat(rows)
+			_, ok := tabularRows(rows, width, mode)
+			return !ok
 		}
 	}
 	return false
 }
 
-func rowsAreFlat(rows []map[string]any) bool {
-	for _, row := range rows {
-		for _, value := range row {
-			switch nested := value.(type) {
-			case map[string]any:
-				return false
-			case []any:
-				for _, item := range nested {
-					if !isScalar(item) {
-						return false
+func tabularRows(rows []map[string]any, width int, mode nestedRecordsMode) ([]map[string]any, bool) {
+	flattened := make([]map[string]any, len(rows))
+	nested := false
+	for i, row := range rows {
+		flattened[i] = make(map[string]any, len(row))
+		rowNested := false
+		for key, value := range row {
+			if !flattenTableValue(flattened[i], encodeColumnPath([]string{key}), value, 0, &rowNested) {
+				return nil, false
+			}
+		}
+		nested = nested || rowNested
+	}
+	prepared := rows
+	if nested {
+		if mode == nestedRecordsTree || len(rows) < 2 {
+			return nil, false
+		}
+		if mode != nestedRecordsTable {
+			for _, row := range flattened[1:] {
+				if len(row) != len(flattened[0]) {
+					return nil, false
+				}
+				for key, first := range flattened[0] {
+					value, exists := row[key]
+					if !exists || tableValueShape(value) != tableValueShape(first) {
+						return nil, false
 					}
 				}
 			}
 		}
+
+		prepared = flattened
+		columns := collectColumns(prepared)
+		if len(columns) > maxNestedTableColumns {
+			return nil, false
+		}
+		headings := make(map[string]struct{}, len(columns))
+		for _, column := range columns {
+			heading := header(column)
+			if _, exists := headings[heading]; exists {
+				return nil, false
+			}
+			headings[heading] = struct{}{}
+		}
 	}
+
+	columns := collectColumns(prepared)
+	constants, variable := extractConstants(prepared, append([]string(nil), columns...))
+	if len(rows) > 1 && len(variable) == 0 {
+		return nil, false
+	}
+	if width > 0 && (!nested || mode != nestedRecordsTable) {
+		if nested && mode != nestedRecordsTable && width < (minNestedTableColumnWidth+3)*len(variable)+1 {
+			return nil, false
+		}
+		byteColumns := inferByteColumns(prepared)
+		for key, value := range constants {
+			if text.StringWidth("├── "+header(key)+": "+cell(key, value, byteColumns)) > width {
+				return nil, false
+			}
+		}
+	}
+	return prepared, true
+}
+
+func tableValueShape(value any) byte {
+	switch value.(type) {
+	case map[string]any:
+		return 'm'
+	case []any:
+		return 'a'
+	default:
+		return 's'
+	}
+}
+
+func joinColumnPath(path, key string) string {
+	if path == "" {
+		return encodeColumnPath([]string{key})
+	}
+	return encodeColumnPath(append(splitColumnPath(path), key))
+}
+
+func encodeColumnPath(path []string) string {
+	encoded, _ := json.Marshal(path)
+	return nestedColumnPathPrefix + string(encoded)
+}
+
+func splitColumnPath(column string) []string {
+	if !strings.HasPrefix(column, nestedColumnPathPrefix) {
+		return []string{column}
+	}
+	var path []string
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(column, nestedColumnPathPrefix)), &path); err != nil || len(path) == 0 {
+		return []string{column}
+	}
+	return path
+}
+
+func flattenTableValue(row map[string]any, name string, value any, depth int, nested *bool) bool {
+	switch data := value.(type) {
+	case map[string]any:
+		*nested = true
+		if depth >= maxNestedTableDepth {
+			return false
+		}
+		if len(data) == 0 {
+			break
+		}
+		for key, child := range data {
+			if !flattenTableValue(row, joinColumnPath(name, key), child, depth+1, nested) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		for _, item := range data {
+			if !isScalar(item) {
+				return false
+			}
+		}
+	}
+	if _, exists := row[name]; exists {
+		return false
+	}
+	row[name] = value
 	return true
 }
 
 func renderTree(w io.Writer, value any, width int) error {
+	return renderTreeWithMode(w, value, width, nestedRecordsAuto)
+}
+
+func renderTreeWithMode(w io.Writer, value any, width int, mode nestedRecordsMode) error {
 	var out strings.Builder
+	byteColumns := inferTreeByteColumns(value)
 	switch data := value.(type) {
 	case map[string]any:
 		out.WriteString("Details\n")
-		if err := renderTreeObject(&out, data, "", width); err != nil {
+		if err := renderTreeObject(&out, data, "", width, mode, "", byteColumns); err != nil {
 			return err
 		}
 	case []any:
 		rows, _ := recordCollection(data)
 		out.WriteString("Items\n")
 		for i, row := range rows {
-			if err := renderTreeNode(&out, fmt.Sprintf("Item %d", i+1), row, "", i == len(rows)-1, width); err != nil {
+			if err := renderTreeNode(&out, fmt.Sprintf("Item %d", i+1), row, "", i == len(rows)-1, width, mode, "", byteColumns); err != nil {
 				return err
 			}
 		}
@@ -229,7 +417,7 @@ func renderTree(w io.Writer, value any, width int) error {
 	return err
 }
 
-func renderTreeObject(out *strings.Builder, object map[string]any, prefix string, width int) error {
+func renderTreeObject(out *strings.Builder, object map[string]any, prefix string, width int, mode nestedRecordsMode, path string, byteColumns map[string]bool) error {
 	keys := make([]string, 0, len(object))
 	for key := range object {
 		keys = append(keys, key)
@@ -242,7 +430,8 @@ func renderTreeObject(out *strings.Builder, object map[string]any, prefix string
 		return keys[i] < keys[j]
 	})
 	for i, key := range keys {
-		if err := renderTreeNode(out, key, object[key], prefix, i == len(keys)-1, width); err != nil {
+		column := joinColumnPath(path, key)
+		if err := renderTreeNode(out, key, object[key], prefix, i == len(keys)-1, width, mode, column, byteColumns); err != nil {
 			return err
 		}
 	}
@@ -261,7 +450,7 @@ func treeLeaf(value any) bool {
 	}
 }
 
-func renderTreeNode(out *strings.Builder, name string, value any, prefix string, last bool, width int) error {
+func renderTreeNode(out *strings.Builder, name string, value any, prefix string, last bool, width int, mode nestedRecordsMode, column string, byteColumns map[string]bool) error {
 	connector, childPrefix := "├── ", prefix+"│   "
 	if last {
 		connector, childPrefix = "└── ", prefix+"    "
@@ -274,17 +463,25 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 			return nil
 		}
 		fmt.Fprintf(out, "%s%s%s\n", prefix, connector, title(name))
-		return renderTreeObject(out, data, childPrefix, width)
+		return renderTreeObject(out, data, childPrefix, width, mode, column, byteColumns)
 	case []any:
 		if rows, ok := recordCollection(data); ok {
 			if len(rows) == 0 {
 				fmt.Fprintf(out, "%s%s%s: []\n", prefix, connector, title(name))
 				return nil
 			}
-			if !rowsAreFlat(rows) {
+			tableWidth := width
+			if tableWidth > 0 {
+				tableWidth -= text.StringWidth(prefix)
+				if tableWidth < 1 {
+					tableWidth = 1
+				}
+			}
+			tableRows, tabular := tabularRows(rows, tableWidth, mode)
+			if !tabular {
 				fmt.Fprintf(out, "%s%s%s\n", prefix, connector, title(name))
 				for i, row := range rows {
-					if err := renderTreeNode(out, fmt.Sprintf("Item %d", i+1), row, childPrefix, i == len(rows)-1, width); err != nil {
+					if err := renderTreeNode(out, fmt.Sprintf("Item %d", i+1), row, childPrefix, i == len(rows)-1, width, mode, column, byteColumns); err != nil {
 						return err
 					}
 				}
@@ -292,7 +489,7 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 			}
 
 			var table strings.Builder
-			if err := renderRows(&table, title(name), rows, width-utf8.RuneCountInString(prefix)); err != nil {
+			if err := renderRows(&table, title(name), tableRows, tableWidth); err != nil {
 				return err
 			}
 			rendered := strings.TrimSuffix(strings.TrimPrefix(table.String(), "Details\n"), "\n")
@@ -310,12 +507,18 @@ func renderTreeNode(out *strings.Builder, name string, value any, prefix string,
 		}
 	}
 
-	byteColumns := inferByteColumns([]map[string]any{{name: value}})
 	cellWidth := maxCellWidth
-	if available := width - utf8.RuneCountInString(prefix+connector+title(name)+": "); width > 0 && available > 0 && available < cellWidth {
-		cellWidth = available
+	if width > 0 {
+		labelWidth := text.StringWidth(prefix + connector + title(name) + ": ")
+		continuationWidth := text.StringWidth(childPrefix + "    ")
+		available := width - max(labelWidth, continuationWidth)
+		if available < 1 {
+			cellWidth = 1
+		} else if available < cellWidth {
+			cellWidth = available
+		}
 	}
-	lines := strings.Split(text.WrapSoft(cell(name, value, byteColumns), cellWidth), "\n")
+	lines := strings.Split(text.WrapSoft(cell(column, value, byteColumns), cellWidth), "\n")
 	fmt.Fprintf(out, "%s%s%s: %s\n", prefix, connector, title(name), lines[0])
 	for _, line := range lines[1:] {
 		fmt.Fprintf(out, "%s    %s\n", childPrefix, line)
@@ -362,6 +565,7 @@ func renderRows(w io.Writer, tableTitle string, rows []map[string]any, width int
 	for i, column := range columns {
 		columnConfigs[i] = prettytable.ColumnConfig{
 			Align:            numericColumnAlignment(rows, column),
+			AlignHeader:      text.AlignLeft,
 			Number:           i + 1,
 			WidthMax:         cellWidth,
 			WidthMaxEnforcer: text.WrapSoft,
@@ -379,7 +583,7 @@ func renderRows(w io.Writer, tableTitle string, rows []map[string]any, width int
 		var details strings.Builder
 		details.WriteString("Details\n")
 		for _, key := range keys {
-			fmt.Fprintf(&details, "├── %s: %s\n", title(key), cell(key, constants[key], byteColumns))
+			fmt.Fprintf(&details, "├── %s: %s\n", header(key), cell(key, constants[key], byteColumns))
 		}
 		details.WriteString("│\n├")
 		details.WriteString(strings.TrimPrefix(rendered, "╭"))
@@ -419,12 +623,16 @@ func numericColumnAlignment(rows []map[string]any, column string) text.Align {
 	return text.AlignDefault
 }
 
-func tableSections(value any) (map[string]any, []tableSection, bool) {
+func tableSections(value any, width int, mode nestedRecordsMode) (map[string]any, []tableSection, bool) {
 	if object, ok := value.(map[string]any); ok {
 		metadata := map[string]any{}
 		var sections []tableSection
 		for title, candidate := range object {
 			if rows, ok := recordCollection(candidate); ok {
+				rows, ok = tabularRows(rows, width, mode)
+				if !ok {
+					return nil, nil, false
+				}
 				sections = append(sections, tableSection{title: title, rows: rows})
 			} else {
 				metadata[title] = candidate
@@ -436,6 +644,10 @@ func tableSections(value any) (map[string]any, []tableSection, bool) {
 		}
 	}
 	rows, ok := tableRows(value)
+	if !ok {
+		return nil, nil, false
+	}
+	rows, ok = tabularRows(rows, width, mode)
 	if !ok {
 		return nil, nil, false
 	}
@@ -561,15 +773,64 @@ func columnIsNested(rows []map[string]any, column string) bool {
 	return false
 }
 
+func inferTreeByteColumns(value any) map[string]bool {
+	values := map[string][]any{}
+	var collect func(any, string)
+	collect = func(value any, path string) {
+		switch data := value.(type) {
+		case map[string]any:
+			for key, child := range data {
+				collect(child, joinColumnPath(path, key))
+			}
+		case []any:
+			if rows, ok := recordCollection(data); ok {
+				for _, row := range rows {
+					collect(row, path)
+				}
+			} else if path != "" {
+				values[path] = append(values[path], value)
+			}
+		default:
+			if path != "" {
+				values[path] = append(values[path], value)
+			}
+		}
+	}
+	collect(value, "")
+
+	result := map[string]bool{}
+	for column, candidates := range values {
+		rows := make([]map[string]any, len(candidates))
+		for i, candidate := range candidates {
+			rows[i] = map[string]any{column: candidate}
+		}
+		if inferByteColumns(rows)[column] {
+			result[column] = true
+		}
+	}
+	return result
+}
+
 func inferByteColumns(rows []map[string]any) map[string]bool {
 	result := map[string]bool{}
 	for _, column := range collectColumns(rows) {
-		normalized := strings.ToLower(strings.ReplaceAll(column, "-", "_"))
+		path := splitColumnPath(column)
+		normalized := strings.ToLower(strings.ReplaceAll(path[len(path)-1], "-", "_"))
 		if normalized == "bytes" || strings.HasSuffix(normalized, "_bytes") {
 			result[column] = true
 			continue
 		}
-		if normalized != "memory" && !strings.HasSuffix(normalized, "_memory") {
+		nestedBytes, nestedMemory := false, false
+		for _, parent := range path[:len(path)-1] {
+			parent = strings.ToLower(strings.ReplaceAll(parent, "-", "_"))
+			nestedBytes = nestedBytes || parent == "bytes" || strings.HasSuffix(parent, "_bytes")
+			nestedMemory = nestedMemory || parent == "memory" || strings.HasSuffix(parent, "_memory")
+		}
+		if nestedBytes {
+			result[column] = true
+			continue
+		}
+		if normalized != "memory" && !strings.HasSuffix(normalized, "_memory") && !nestedMemory {
 			continue
 		}
 		seen := false
@@ -580,7 +841,7 @@ func inferByteColumns(rows []map[string]any) map[string]bool {
 				continue
 			}
 			n, ok := number(value)
-			if !ok || math.Abs(n) < 1<<20 || math.Mod(math.Abs(n), 1024) != 0 {
+			if !ok || n != 0 && math.Abs(n) < 1<<20 || !nestedMemory && math.Mod(math.Abs(n), 1024) != 0 {
 				valid = false
 				break
 			}
@@ -642,6 +903,9 @@ func cell(column string, value any, byteColumns map[string]bool) string {
 	case bool:
 		result = strconv.FormatBool(data)
 	case []any:
+		if len(data) == 0 {
+			return "[]"
+		}
 		parts := make([]string, len(data))
 		for i, item := range data {
 			if !isScalar(item) {
@@ -687,11 +951,12 @@ func humanBytes(bytes float64) string {
 		value /= 1024
 		unit++
 	}
-	return strconv.FormatFloat(value, 'f', -1, 64) + " " + units[unit]
+	formatted := strings.TrimSuffix(strconv.FormatFloat(value, 'f', 1, 64), ".0")
+	return formatted + " " + units[unit]
 }
 
 func header(column string) string {
-	return title(column)
+	return title(strings.Join(splitColumnPath(column), " "))
 }
 
 func title(value string) string {

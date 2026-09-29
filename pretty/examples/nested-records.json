@@ -1,0 +1,24 @@
+[
+  {
+    "id": "node-a",
+    "name": "Alpha",
+    "state": "ready",
+    "capacity": {
+      "cpu": {"total": 100, "used": 40},
+      "memory": {"total": 8589934592, "used": 4294967296}
+    },
+    "cluster": {"id": "group-1", "name": "Primary"},
+    "tags": []
+  },
+  {
+    "id": "node-b",
+    "name": "Beta",
+    "state": "ready",
+    "capacity": {
+      "cpu": {"total": 120, "used": 60},
+      "memory": {"total": 17179869184, "used": 6442450944}
+    },
+    "cluster": {"id": "group-2", "name": "Secondary"},
+    "tags": ["reserved"]
+  }
+]
