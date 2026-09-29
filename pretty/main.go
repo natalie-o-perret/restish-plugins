@@ -565,6 +565,7 @@ func renderRows(w io.Writer, tableTitle string, rows []map[string]any, width int
 	for i, column := range columns {
 		columnConfigs[i] = prettytable.ColumnConfig{
 			Align:            numericColumnAlignment(rows, column),
+			AlignHeader:      text.AlignLeft,
 			Number:           i + 1,
 			WidthMax:         cellWidth,
 			WidthMaxEnforcer: text.WrapSoft,
@@ -840,7 +841,7 @@ func inferByteColumns(rows []map[string]any) map[string]bool {
 				continue
 			}
 			n, ok := number(value)
-			if !ok || math.Abs(n) < 1<<20 || !nestedMemory && math.Mod(math.Abs(n), 1024) != 0 {
+			if !ok || n != 0 && math.Abs(n) < 1<<20 || !nestedMemory && math.Mod(math.Abs(n), 1024) != 0 {
 				valid = false
 				break
 			}
@@ -950,7 +951,8 @@ func humanBytes(bytes float64) string {
 		value /= 1024
 		unit++
 	}
-	return strconv.FormatFloat(value, 'f', -1, 64) + " " + units[unit]
+	formatted := strings.TrimSuffix(strconv.FormatFloat(value, 'f', 1, 64), ".0")
+	return formatted + " " + units[unit]
 }
 
 func header(column string) string {

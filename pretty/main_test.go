@@ -407,6 +407,28 @@ func TestByteInferenceDoesNotBroadenFlatColumnNames(t *testing.T) {
 	}
 }
 
+func TestMemoryFormattingAllowsZeroAndRounds(t *testing.T) {
+	column := encodeColumnPath([]string{"capacity", "memory", "used"})
+	rows := []map[string]any{{column: 0}, {column: 379030863872.0}}
+	if !inferByteColumns(rows)[column] {
+		t.Fatal("zero memory usage prevented byte inference")
+	}
+	if got, want := humanBytes(496174483375), "462.1 GiB"; got != want {
+		t.Fatalf("humanBytes() = %q, want %q", got, want)
+	}
+}
+
+func TestNumericColumnHeadersStayLeftAligned(t *testing.T) {
+	column := encodeColumnPath([]string{"memory", "used"})
+	var out strings.Builder
+	if err := renderRows(&out, "", []map[string]any{{column: 40}, {column: 60}}, 12); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\n│ Used") {
+		t.Fatalf("numeric column header is not left-aligned:\n%s", out.String())
+	}
+}
+
 func TestPrettyUnwrapsDisplayEnvelope(t *testing.T) {
 	body := []any{
 		map[string]any{
