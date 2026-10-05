@@ -69,10 +69,81 @@ func TestFormatterRedrawsTTYLine(t *testing.T) {
 	}
 }
 
+func TestFormatterStreamsChangedSnapshotRecords(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	for _, body := range []any{
+		[]any{
+			map[string]any{"id": "prepare", "state": "running"},
+			map[string]any{"id": "finish", "state": "pending"},
+		},
+		[]any{
+			map[string]any{"id": "prepare", "state": "running"},
+			map[string]any{"id": "finish", "state": "pending"},
+		},
+		[]any{
+			map[string]any{"id": "prepare", "state": "success"},
+			map[string]any{"id": "finish", "state": "pending"},
+		},
+		[]any{
+			map[string]any{"id": "finish", "state": "success"},
+		},
+	} {
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "prepare  running\nfinish  pending\nprepare  success\nfinish  success\n"
+	if got := out.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestFormatterRedrawsTTYSnapshot(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []any{
+		[]any{
+			map[string]any{"id": "prepare", "state": "running"},
+			map[string]any{"id": "finish", "state": "pending"},
+		},
+		[]any{
+			map[string]any{"id": "prepare", "state": "running"},
+		},
+		[]any{
+			map[string]any{"id": "prepare", "state": "success"},
+		},
+	} {
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "\r\x1b[2Kprepare  running\n\r\x1b[2Kfinish  pending" +
+		"\r\x1b[1A\x1b[2Kprepare  running\n\r\x1b[2K\x1b[1A" +
+		"\r\x1b[2Kprepare  success\n"
+	if got := out.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestDecodeProgressRejectsIncompleteCount(t *testing.T) {
 	_, err := decodeProgress(map[string]any{"label": "workflow", "current": 1})
 	if err == nil || !strings.Contains(err.Error(), "current and total together") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDecodeProgressSnapshotRequiresUniqueIDs(t *testing.T) {
+	for _, body := range []any{
+		[]any{map[string]any{"label": "missing id"}},
+		[]any{map[string]any{"id": "same"}, map[string]any{"id": "same"}},
+	} {
+		if _, _, err := decodeProgresses(body); err == nil {
+			t.Fatalf("snapshot %#v was accepted", body)
+		}
 	}
 }
 
