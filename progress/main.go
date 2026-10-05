@@ -52,6 +52,7 @@ type progress struct {
 	Total   *int64 `json:"total"`
 	Unit    string `json:"unit"`
 	Message string `json:"message"`
+	Summary bool   `json:"_summary"`
 }
 
 type formatterRequest struct {
@@ -136,6 +137,9 @@ func (f *formatter) Handle(req formatterRequest) error {
 		if err != nil {
 			return err
 		}
+		if progresses == nil && !snapshot {
+			return nil
+		}
 		return f.write(progresses, snapshot)
 	case "end":
 		if f.tty && f.activeLines > 0 {
@@ -160,7 +164,9 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, false, fmt.Errorf("decode progress record: %w", err)
 	}
-	if normalized, ok := normalizeProgressInput(decoded); ok {
+	if normalized, ok, skip := normalizeProgressInput(decoded); skip {
+		return nil, false, nil
+	} else if ok {
 		raw, err = json.Marshal(normalized)
 		if err != nil {
 			return nil, false, fmt.Errorf("encode normalized progress record: %w", err)
@@ -194,12 +200,15 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 	return progresses, true, nil
 }
 
-func normalizeProgressInput(value any) (any, bool) {
+func normalizeProgressInput(value any) (any, bool, bool) {
 	root, ok := value.(map[string]any)
 	if !ok {
-		return value, false
+		return value, false, false
 	}
 	eventValue, event := objectField(root, "event")
+	if event && fmt.Sprint(eventValue) == "eof" {
+		return nil, false, true
+	}
 	if data, ok := objectField(root, "data"); ok {
 		if object, ok := data.(map[string]any); ok {
 			root = object
@@ -213,7 +222,7 @@ func normalizeProgressInput(value any) (any, bool) {
 					for _, stepValue := range steps {
 						step, ok := stepValue.(map[string]any)
 						if !ok {
-							return value, false
+							return value, false, false
 						}
 						record := make(map[string]any)
 						for _, name := range []string{"id", "label", "state", "current", "total", "unit", "message"} {
@@ -238,7 +247,43 @@ func normalizeProgressInput(value any) (any, bool) {
 						}
 						records = append(records, record)
 					}
-					return records, true
+					if len(records) > 0 {
+						state := "running"
+						if status, ok := objectField(root, "stream-status"); ok {
+							state = fmt.Sprint(status)
+							if _, suffix, found := strings.Cut(state, "/"); found {
+								state = suffix
+							}
+							if state == "pending" {
+								state = "running"
+							}
+						}
+						current := 0
+						message := ""
+						for _, recordValue := range records {
+							record := recordValue.(map[string]any)
+							recordState := fmt.Sprint(record["state"])
+							if terminalState(recordState) {
+								current++
+							}
+							if recordState == "dispatched" || recordState == "running" {
+								message = fmt.Sprint(record["label"])
+							}
+						}
+						if terminalState(state) {
+							current = len(records)
+						}
+						records = append([]any{map[string]any{
+							"id":       "status",
+							"label":    "Progress",
+							"state":    state,
+							"current":  current,
+							"total":    len(records),
+							"message":  message,
+							"_summary": true,
+						}}, records...)
+					}
+					return records, true, false
 				}
 			}
 		}
@@ -254,9 +299,12 @@ func normalizeProgressInput(value any) (any, bool) {
 		} else if state == "timeout" {
 			state, message = "error", "timeout"
 		}
-		return []any{map[string]any{"id": "status", "label": "Progress", "state": state, "message": message}}, true
+		return []any{map[string]any{
+			"id": "status", "label": "Progress", "state": state,
+			"current": 1, "total": 1, "message": message,
+		}}, true, false
 	}
-	return value, false
+	return value, false, false
 }
 
 func objectField(object map[string]any, name string) (any, bool) {
@@ -305,6 +353,9 @@ func decodeProgress(value any) (progress, error) {
 }
 
 func (f *formatter) write(progresses []progress, snapshot bool) error {
+	if f.tty && len(progresses) > 0 && progresses[0].Summary {
+		progresses = progresses[:1]
+	}
 	lines := make([]string, len(progresses))
 	terminal := len(progresses) > 0
 	for i, p := range progresses {
@@ -400,6 +451,7 @@ func render(p progress, style barStyle, color bool) (string, error) {
 		progressbar.OptionSetTheme(theme),
 		progressbar.OptionSetPredictTime(false),
 		progressbar.OptionSetElapsedTime(false),
+		progressbar.OptionSetRenderBlankState(true),
 		progressbar.OptionShowDescriptionAtLineEnd(),
 		progressbar.OptionSetDescription(progressDescription(p)),
 	)

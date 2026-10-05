@@ -106,6 +106,7 @@ func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
 		map[string]any{
 			"event": "job",
 			"data": map[string]any{
+				"job/stream-status": "job/pending",
 				"job/progress": map[string]any{
 					"progress/steps": []any{
 						map[string]any{
@@ -119,15 +120,60 @@ func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
 				},
 			},
 		},
+		map[string]any{
+			"event": "job",
+			"data": map[string]any{
+				"job/stream-status": "job/success",
+				"job/progress": map[string]any{
+					"progress/steps": []any{
+						map[string]any{
+							"progress/id":     8,
+							"progress/group":  "rescue",
+							"progress/label":  "sleep 2",
+							"progress/state":  "success",
+							"progress/target": "host-a",
+						},
+					},
+				},
+			},
+		},
 		map[string]any{"event": "eof", "data": map[string]any{"status": "job/success"}},
 	} {
 		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := "rescue: sleep 2  dispatched: host-a\nProgress  success\n"
+	want := "0% ░░░░░░░░░░░░░░░░░░░░░░░░  Progress  0/1 step  running: rescue: sleep 2\n" +
+		"rescue: sleep 2  dispatched: host-a\n" +
+		"100% ████████████████████████  Progress  1/1 step  success\n" +
+		"rescue: sleep 2  success: host-a\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestFormatterShowsOnlySnapshotSummaryOnTTY(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{
+		"event": "job",
+		"data": map[string]any{
+			"stream-status": "job/pending",
+			"progress": map[string]any{
+				"steps": []any{map[string]any{
+					"id": 8, "group": "rescue", "label": "sleep 2", "state": "dispatched", "target": "host-a",
+				}},
+			},
+		},
+	}
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "Progress") || strings.Contains(got, "dispatched: host-a") {
+		t.Fatalf("output = %q", got)
 	}
 }
 
