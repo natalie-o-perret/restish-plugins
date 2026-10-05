@@ -14,6 +14,7 @@ for each input item:
 ```json
 {
   "id": "deploy",
+  "parent": "workflow",
   "label": "Deploy instances",
   "state": "running",
   "current": 3,
@@ -23,7 +24,8 @@ for each input item:
 }
 ```
 
-`label` falls back to `id`. `state` defaults to `running`. `current` and
+`parent` optionally links the record into a progress tree. `label` falls back
+to `id`. `state` defaults to `running`. `current` and
 `total` are optional, but must be supplied together. `unit` defaults to
 `steps`.
 
@@ -32,20 +34,18 @@ progress records. Snapshot records require unique `id` values:
 
 ```json
 [
-  {"id":"prepare","label":"Prepare","state":"success"},
-  {"id":"deploy","label":"Deploy","state":"running"},
-  {"id":"verify","label":"Verify","state":"pending"}
+  {"id":"workflow","label":"Overall","state":"running","current":1,"total":3},
+  {"id":"prepare","parent":"workflow","label":"Prepare","state":"success","current":1,"total":1},
+  {"id":"deploy","parent":"workflow","label":"Deploy","state":"running","current":0,"total":1}
 ]
 ```
 
-SSE event envelopes containing `data.progress.steps` are normalized to the
-same snapshot contract automatically. Namespaced keys such as
-`job/progress`, `progress/steps`, and `progress/state` are supported too, so
-compatible streams need only select the formatter with `-o progress`. In a
-terminal, these snapshots show an aggregate bar and up to four active group
-bars. Further active groups are collapsed into an overflow count.
-An optional `group-path` array of `{id, label}` objects renders nested groups
-as a tree. Streams with only `group` continue to render a flat group list.
+SSE event envelopes may put the snapshot array directly in `data`, or in
+`data.records`. Parent records must exist in the same snapshot and trees must
+not contain cycles. In a terminal, child records with `current` and `total`
+render as a tree of bars. Child records without counts remain available in
+redirected output as log details. Up to four active leaf bars are shown and
+further active leaves are collapsed into an overflow count.
 
 The formatter redraws the progress lines when Restish enables terminal
 formatting. Redirected or colour-disabled output emits only changed step

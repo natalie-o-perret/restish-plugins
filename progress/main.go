@@ -49,15 +49,14 @@ const (
 
 type progress struct {
 	ID      string          `json:"id"`
+	Parent  string          `json:"parent"`
 	Label   string          `json:"label"`
 	State   string          `json:"state"`
 	Current *int64          `json:"current"`
 	Total   *int64          `json:"total"`
 	Unit    string          `json:"unit"`
 	Message string          `json:"message"`
-	Summary bool            `json:"_summary"`
-	Group   string          `json:"_group"`
-	Path    []progressGroup `json:"_group_path"`
+	Path    []progressGroup `json:"-"`
 }
 
 type progressGroup struct {
@@ -176,27 +175,18 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, false, fmt.Errorf("decode progress record: %w", err)
 	}
-	normalizedInput := false
 	if normalized, ok, skip := normalizeProgressInput(decoded); skip {
 		return nil, false, nil
 	} else if ok {
-		normalizedInput = true
 		raw, err = json.Marshal(normalized)
 		if err != nil {
 			return nil, false, fmt.Errorf("encode normalized progress record: %w", err)
 		}
 	}
-	if !normalizedInput {
-		stripProgressInternalFields(decoded)
-		raw, err = json.Marshal(decoded)
-		if err != nil {
-			return nil, false, fmt.Errorf("encode progress record: %w", err)
-		}
-	}
 	if len(raw) == 0 || raw[0] != '[' {
 		p, err := decodeProgress(json.RawMessage(raw))
-		if !normalizedInput {
-			p.Summary, p.Group, p.Path = false, "", nil
+		if err == nil && p.Parent != "" {
+			err = fmt.Errorf("progress record %q requires a snapshot containing parent %q", p.ID, p.Parent)
 		}
 		return []progress{p}, false, err
 	}
@@ -215,36 +205,17 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 		if p.ID == "" {
 			return nil, true, fmt.Errorf("progress snapshot item %d requires id", i)
 		}
-		if !normalizedInput {
-			p.Summary, p.Group, p.Path = false, "", nil
+		if _, exists := ids[p.ID]; exists {
+			return nil, true, fmt.Errorf("progress snapshot contains duplicate id %q", p.ID)
 		}
-		if !p.Summary && p.Group == "" {
-			if _, exists := ids[p.ID]; exists {
-				return nil, true, fmt.Errorf("progress snapshot contains duplicate id %q", p.ID)
-			}
-			ids[p.ID] = struct{}{}
-		}
+		ids[p.ID] = struct{}{}
 		progresses[i] = p
 	}
+	progresses, err = orderProgressTree(progresses)
+	if err != nil {
+		return nil, true, err
+	}
 	return progresses, true, nil
-}
-
-func stripProgressInternalFields(value any) {
-	strip := func(record map[string]any) {
-		delete(record, "_summary")
-		delete(record, "_group")
-		delete(record, "_group_path")
-	}
-	switch value := value.(type) {
-	case map[string]any:
-		strip(value)
-	case []any:
-		for _, item := range value {
-			if record, ok := item.(map[string]any); ok {
-				strip(record)
-			}
-		}
-	}
 }
 
 func normalizeProgressInput(value any) (any, bool, bool) {
@@ -252,243 +223,73 @@ func normalizeProgressInput(value any) (any, bool, bool) {
 	if !ok {
 		return value, false, false
 	}
-	eventValue, event := objectField(root, "event")
-	if event && fmt.Sprint(eventValue) == "eof" {
+	if data, ok := root["data"]; ok {
+		if records, ok := data.([]any); ok {
+			return records, true, false
+		}
+		root, ok = data.(map[string]any)
+		if !ok {
+			return nil, false, true
+		}
+		if records, ok := root["records"].([]any); ok {
+			return records, true, false
+		}
 		return nil, false, true
 	}
-	if data, ok := objectField(root, "data"); ok {
-		if object, ok := data.(map[string]any); ok {
-			root = object
-		}
+	if records, ok := root["records"].([]any); ok {
+		return records, true, false
 	}
-	if progressValue, ok := objectField(root, "progress"); ok {
-		if progressObject, ok := progressValue.(map[string]any); ok {
-			if stepsValue, ok := objectField(progressObject, "steps"); ok {
-				if steps, ok := stepsValue.([]any); ok {
-					records := make([]any, 0, len(steps))
-					groupOrder := make([]string, 0)
-					groupSteps := make(map[string][]map[string]any)
-					groupPaths := make(map[string][]progressGroup)
-					for _, stepValue := range steps {
-						step, ok := stepValue.(map[string]any)
-						if !ok {
-							return value, false, false
-						}
-						record := make(map[string]any)
-						for _, name := range []string{"id", "label", "state", "current", "total", "unit", "message"} {
-							if field, ok := objectField(step, name); ok {
-								record[name] = field
-							}
-						}
-						if id, ok := record["id"]; ok {
-							record["id"] = fmt.Sprint(id)
-						}
-						path := progressGroupPath(step)
-						if len(path) > 0 {
-							for i := range path {
-								prefix := path[:i+1]
-								key := progressGroupKey(prefix)
-								if _, exists := groupSteps[key]; !exists {
-									groupOrder = append(groupOrder, key)
-									groupPaths[key] = slices.Clone(prefix)
-								}
-								groupSteps[key] = append(groupSteps[key], record)
-							}
-							if label, ok := record["label"]; ok && fmt.Sprint(label) != "" {
-								record["label"] = fmt.Sprintf("%s: %v", path[len(path)-1].Label, label)
-							}
-						}
-						if _, ok := record["message"]; !ok {
-							if reason, ok := objectField(step, "reason"); ok {
-								record["message"] = reason
-							} else if target, ok := objectField(step, "target"); ok {
-								record["message"] = target
-							}
-						}
-						records = append(records, record)
-					}
-					if len(records) > 0 {
-						groupOrder = treeGroupOrder(groupOrder, groupPaths)
-						state := "running"
-						if status, ok := objectField(root, "stream-status"); ok {
-							state = fmt.Sprint(status)
-							if _, suffix, found := strings.Cut(state, "/"); found {
-								state = suffix
-							}
-							if state == "pending" {
-								state = "running"
-							}
-						}
-						current := 0
-						message := ""
-						for _, recordValue := range records {
-							record := recordValue.(map[string]any)
-							recordState := fmt.Sprint(record["state"])
-							if terminalState(recordState) {
-								current++
-							}
-							if recordState == "dispatched" || recordState == "running" {
-								message = fmt.Sprint(record["label"])
-							}
-						}
-						if terminalState(state) {
-							current = len(records)
-						}
-						summaries := []any{map[string]any{
-							"id":       "status",
-							"label":    "Progress",
-							"state":    state,
-							"current":  current,
-							"total":    len(records),
-							"message":  message,
-							"_summary": true,
-						}}
-						for _, groupKey := range groupOrder {
-							path := groupPaths[groupKey]
-							groupName := path[len(path)-1].Label
-							steps := groupSteps[groupKey]
-							groupCurrent := 0
-							activeLabels := make([]string, 0)
-							failed := false
-							cancelled := false
-							for _, step := range steps {
-								stepState := fmt.Sprint(step["state"])
-								if terminalState(stepState) {
-									groupCurrent++
-								}
-								if stepState == "dispatched" || stepState == "running" {
-									activeLabels = append(activeLabels, strings.TrimPrefix(fmt.Sprint(step["label"]), groupName+": "))
-								} else if failureState(stepState) {
-									failed = true
-								} else if cancelledState(stepState) {
-									cancelled = true
-								}
-							}
-							if terminalState(state) {
-								activeLabels = nil
-								if state == "success" && !failed && !cancelled {
-									groupCurrent = len(steps)
-								}
-							}
-							if groupCurrent == 0 && len(activeLabels) == 0 && !terminalState(state) {
-								continue
-							}
-							groupState := "running"
-							if len(activeLabels) == 0 && (groupCurrent == len(steps) || terminalState(state) || failed || cancelled) {
-								switch {
-								case failed || failureState(state) && groupCurrent < len(steps):
-									groupState = "failure"
-								case cancelled || cancelledState(state) && groupCurrent < len(steps):
-									groupState = "cancelled"
-								default:
-									groupState = "success"
-								}
-							}
-							groupMessage := ""
-							if len(activeLabels) == 1 {
-								groupMessage = activeLabels[0]
-							} else if len(activeLabels) > 1 {
-								groupMessage = fmt.Sprintf("%d running", len(activeLabels))
-							}
-							summaries = append(summaries, map[string]any{
-								"id": "group:" + groupKey, "label": groupName, "_group": groupName, "_group_path": path,
-								"state": groupState, "current": groupCurrent, "total": len(steps), "message": groupMessage,
-							})
-						}
-						records = append(summaries, records...)
-					}
-					return records, true, false
-				}
-			}
-		}
-	}
-	if event {
-		state := fmt.Sprint(eventValue)
-		message := ""
-		if status, ok := objectField(root, "status"); ok {
-			state = fmt.Sprint(status)
-			if _, suffix, found := strings.Cut(state, "/"); found {
-				state = suffix
-			}
-		} else if state == "timeout" {
-			state, message = "error", "timeout"
-		}
-		return []any{map[string]any{
-			"id": "status", "label": "Progress", "state": state,
-			"current": 1, "total": 1, "message": message,
-		}}, true, false
+	if _, ok := root["event"]; ok {
+		return nil, false, true
 	}
 	return value, false, false
 }
 
-func objectField(object map[string]any, name string) (any, bool) {
-	if value, ok := object[name]; ok {
-		return value, true
-	}
-	for key, value := range object {
-		if strings.HasSuffix(key, "/"+name) {
-			return value, true
-		}
-	}
-	return nil, false
-}
-
-func progressGroupPath(step map[string]any) []progressGroup {
-	if value, ok := objectField(step, "group-path"); ok {
-		if items, ok := value.([]any); ok {
-			path := make([]progressGroup, 0, len(items))
-			valid := true
-			for _, item := range items {
-				object, ok := item.(map[string]any)
-				if !ok {
-					valid = false
-					break
-				}
-				id, idOK := objectField(object, "id")
-				label, labelOK := objectField(object, "label")
-				if !idOK || !labelOK || fmt.Sprint(id) == "" || fmt.Sprint(label) == "" {
-					valid = false
-					break
-				}
-				path = append(path, progressGroup{ID: fmt.Sprint(id), Label: fmt.Sprint(label)})
-			}
-			if valid && len(path) > 0 {
-				return path
-			}
-		}
-	}
-	if group, ok := objectField(step, "group"); ok && fmt.Sprint(group) != "" {
-		name := fmt.Sprint(group)
-		return []progressGroup{{ID: name, Label: name}}
-	}
-	return nil
-}
-
-func progressGroupKey(path []progressGroup) string {
-	var key strings.Builder
-	for _, group := range path {
-		fmt.Fprintf(&key, "%d:%s", len(group.ID), group.ID)
-	}
-	return key.String()
-}
-
-func treeGroupOrder(order []string, paths map[string][]progressGroup) []string {
+func orderProgressTree(progresses []progress) ([]progress, error) {
+	byID := make(map[string]progress, len(progresses))
 	children := make(map[string][]string)
-	for _, key := range order {
-		path := paths[key]
-		parent := progressGroupKey(path[:len(path)-1])
-		children[parent] = append(children[parent], key)
+	for _, p := range progresses {
+		byID[p.ID] = p
+		children[p.Parent] = append(children[p.Parent], p.ID)
 	}
-	result := make([]string, 0, len(order))
-	var appendChildren func(string)
-	appendChildren = func(parent string) {
-		for _, child := range children[parent] {
-			result = append(result, child)
-			appendChildren(child)
+	for _, p := range progresses {
+		if p.Parent != "" {
+			if _, ok := byID[p.Parent]; !ok {
+				return nil, fmt.Errorf("progress record %q references missing parent %q", p.ID, p.Parent)
+			}
 		}
 	}
-	appendChildren("")
-	return result
+	ordered := make([]progress, 0, len(progresses))
+	visiting := make(map[string]bool)
+	var walk func(string, []progressGroup) error
+	walk = func(id string, path []progressGroup) error {
+		if visiting[id] {
+			return fmt.Errorf("progress tree contains a cycle at %q", id)
+		}
+		visiting[id] = true
+		p := byID[id]
+		if p.Parent != "" {
+			path = append(slices.Clone(path), progressGroup{ID: p.ID, Label: p.Label})
+			p.Path = path
+		}
+		ordered = append(ordered, p)
+		for _, child := range children[id] {
+			if err := walk(child, path); err != nil {
+				return err
+			}
+		}
+		visiting[id] = false
+		return nil
+	}
+	for _, root := range children[""] {
+		if err := walk(root, nil); err != nil {
+			return nil, err
+		}
+	}
+	if len(ordered) != len(progresses) {
+		return nil, fmt.Errorf("progress tree contains a cycle")
+	}
+	return ordered, nil
 }
 
 func decodeProgress(value any) (progress, error) {
@@ -525,18 +326,22 @@ func decodeProgress(value any) (progress, error) {
 }
 
 func (f *formatter) write(progresses []progress, snapshot bool) error {
-	if f.tty && len(progresses) > 0 && progresses[0].Summary {
-		compact := []progress{progresses[0]}
+	if f.tty && slices.ContainsFunc(progresses, func(p progress) bool { return p.Parent != "" }) {
+		compact := make([]progress, 0, len(progresses))
 		activeLeaves := make([][]progressGroup, 0)
-		for _, p := range progresses[1:] {
-			if p.Group == "" || terminalState(p.State) || hasActiveDescendant(p, progresses[1:]) {
+		for _, p := range progresses {
+			if !treeBar(p) || terminalState(p.State) || hasActiveDescendant(p, progresses) {
 				continue
 			}
-			activeLeaves = append(activeLeaves, groupPath(p))
+			activeLeaves = append(activeLeaves, p.Path)
 		}
 		visibleLeaves := activeLeaves[:min(len(activeLeaves), f.style.MaxGroups)]
-		for _, p := range progresses[1:] {
-			if p.Group == "" {
+		for _, p := range progresses {
+			if p.Parent == "" {
+				compact = append(compact, p)
+				continue
+			}
+			if !treeBar(p) {
 				continue
 			}
 			if terminalState(p.State) {
@@ -546,7 +351,7 @@ func (f *formatter) write(progresses []progress, snapshot bool) error {
 				continue
 			}
 			if slices.ContainsFunc(visibleLeaves, func(leaf []progressGroup) bool {
-				return groupPathPrefix(groupPath(p), leaf)
+				return groupPathPrefix(p.Path, leaf)
 			}) {
 				compact = append(compact, p)
 			}
@@ -555,13 +360,11 @@ func (f *formatter) write(progresses []progress, snapshot bool) error {
 			compact = append(compact, progress{ID: "group-overflow", Label: fmt.Sprintf("+%d other active groups", len(activeLeaves)-f.style.MaxGroups), State: "running"})
 		}
 		progresses = compact
-	} else if !f.tty && snapshot {
-		progresses = slices.DeleteFunc(progresses, func(p progress) bool { return p.Group != "" })
 	}
 	rendered := make([]string, len(progresses))
 	terminal := len(progresses) > 0
 	for i, p := range progresses {
-		if p.Group != "" {
+		if f.tty && treeBar(p) {
 			p.Label = ""
 		}
 		line, err := render(p, f.style, f.tty)
@@ -675,12 +478,12 @@ func renderTTYLines(progresses []progress, rendered []string) []string {
 	lines := make([]string, 0, len(rendered))
 	var previousPath []progressGroup
 	for i, p := range progresses {
-		if p.Group == "" {
+		if !treeBar(p) {
 			lines = append(lines, strings.Split(rendered[i], "\n")...)
 			previousPath = nil
 			continue
 		}
-		path := groupPath(p)
+		path := p.Path
 		common := 0
 		for common < len(path) && common < len(previousPath) && path[common].ID == previousPath[common].ID {
 			common++
@@ -708,11 +511,8 @@ func renderTTYLines(progresses []progress, rendered []string) []string {
 	return lines
 }
 
-func groupPath(p progress) []progressGroup {
-	if len(p.Path) > 0 {
-		return p.Path
-	}
-	return []progressGroup{{ID: p.Group, Label: p.Group}}
+func treeBar(p progress) bool {
+	return p.Parent != "" && p.Total != nil
 }
 
 func groupPathPrefix(prefix, path []progressGroup) bool {
@@ -728,16 +528,15 @@ func groupPathPrefix(prefix, path []progressGroup) bool {
 }
 
 func hasActiveDescendant(group progress, progresses []progress) bool {
-	path := groupPath(group)
+	path := group.Path
 	return slices.ContainsFunc(progresses, func(candidate progress) bool {
-		candidatePath := groupPath(candidate)
-		return candidate.Group != "" && !terminalState(candidate.State) && len(candidatePath) > len(path) && groupPathPrefix(path, candidatePath)
+		return treeBar(candidate) && !terminalState(candidate.State) && len(candidate.Path) > len(path) && groupPathPrefix(path, candidate.Path)
 	})
 }
 
 func hasLaterGroupSibling(progresses []progress, index int, path []progressGroup, depth int) bool {
 	for _, candidate := range progresses[index+1:] {
-		if candidate.Group == "" || len(candidate.Path) <= depth {
+		if !treeBar(candidate) || len(candidate.Path) <= depth {
 			continue
 		}
 		sameParent := true
@@ -988,14 +787,6 @@ func terminalState(state string) bool {
 	default:
 		return false
 	}
-}
-
-func failureState(state string) bool {
-	return state == "failure" || state == "failed" || state == "error"
-}
-
-func cancelledState(state string) bool {
-	return state == "cancelled" || state == "canceled"
 }
 
 func fail(err error) {

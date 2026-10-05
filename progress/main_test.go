@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -114,50 +115,26 @@ func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
 	var out bytes.Buffer
 	f := &formatter{w: &out, style: defaultBarStyle()}
 	for _, body := range []any{
-		map[string]any{
-			"event": "job",
-			"data": map[string]any{
-				"job/stream-status": "job/pending",
-				"job/progress": map[string]any{
-					"progress/steps": []any{
-						map[string]any{
-							"progress/id":     8,
-							"progress/group":  "rescue",
-							"progress/label":  "sleep 2",
-							"progress/state":  "dispatched",
-							"progress/target": "host-a",
-						},
-					},
-				},
-			},
-		},
-		map[string]any{
-			"event": "job",
-			"data": map[string]any{
-				"job/stream-status": "job/success",
-				"job/progress": map[string]any{
-					"progress/steps": []any{
-						map[string]any{
-							"progress/id":     8,
-							"progress/group":  "rescue",
-							"progress/label":  "sleep 2",
-							"progress/state":  "success",
-							"progress/target": "host-a",
-						},
-					},
-				},
-			},
-		},
-		map[string]any{"event": "eof", "data": map[string]any{"status": "job/success"}},
+		recordSnapshot(
+			map[string]any{"id": "status", "label": "Progress", "state": "running", "current": 0, "total": 1},
+			map[string]any{"id": "rescue", "parent": "status", "label": "rescue", "state": "running", "current": 0, "total": 1},
+			map[string]any{"id": "step-8", "parent": "rescue", "label": "sleep 2", "state": "dispatched", "message": "host-a"}),
+		recordSnapshot(
+			map[string]any{"id": "status", "label": "Progress", "state": "success", "current": 1, "total": 1},
+			map[string]any{"id": "rescue", "parent": "status", "label": "rescue", "state": "success", "current": 1, "total": 1},
+			map[string]any{"id": "step-8", "parent": "rescue", "label": "sleep 2", "state": "success", "message": "host-a"}),
+		map[string]any{"event": "heartbeat"},
 	} {
 		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := "0% ░░░░░░░░░░░░░░░░░░░░░░░░  Progress  0/1 step  running: rescue: sleep 2\n" +
-		"rescue: sleep 2  dispatched: host-a\n" +
+	want := "0% ░░░░░░░░░░░░░░░░░░░░░░░░  Progress  0/1 step  running\n" +
+		"0% ░░░░░░░░░░░░░░░░░░░░░░░░  rescue  0/1 step  running\n" +
+		"sleep 2  dispatched: host-a\n" +
 		"100% ████████████████████████  Progress  1/1 step  success\n" +
-		"rescue: sleep 2  success: host-a\n"
+		"100% ████████████████████████  rescue  1/1 step  success\n" +
+		"sleep 2  success: host-a\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -169,21 +146,14 @@ func TestFormatterShowsOnlySnapshotSummaryOnTTY(t *testing.T) {
 	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
 		t.Fatal(err)
 	}
-	body := map[string]any{
-		"event": "job",
-		"data": map[string]any{
-			"stream-status": "job/pending",
-			"progress": map[string]any{
-				"steps": []any{map[string]any{
-					"id": 8, "group": "rescue", "label": "sleep 2", "state": "dispatched", "target": "host-a",
-				}},
-			},
-		},
-	}
+	body := recordSnapshot(
+		map[string]any{"id": "status", "label": "Progress", "state": "running", "current": 0, "total": 1},
+		map[string]any{"id": "rescue", "parent": "status", "label": "rescue", "state": "running", "current": 0, "total": 1},
+		map[string]any{"id": "step-8", "parent": "rescue", "label": "sleep 2", "state": "dispatched", "message": "host-a"})
 	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "Progress") || !strings.Contains(got, "Group: rescue\n") || strings.Contains(got, "dispatched: host-a") {
+	if got := out.String(); !strings.Contains(got, "Progress") || !strings.Contains(got, "Group: rescue\n") || strings.Contains(got, "sleep 2") {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -194,13 +164,11 @@ func TestFormatterLimitsActiveGroupsOnTTY(t *testing.T) {
 	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
 		t.Fatal(err)
 	}
-	steps := make([]any, 5)
-	for i := range steps {
-		steps[i] = map[string]any{"id": i, "group": fmt.Sprintf("parallel %d", i+1), "label": "work", "state": "running"}
+	records := []any{map[string]any{"id": "status", "label": "Progress", "state": "running", "current": 0, "total": 5}}
+	for i := 1; i <= 5; i++ {
+		records = append(records, map[string]any{"id": fmt.Sprint(i), "parent": "status", "label": fmt.Sprintf("parallel %d", i), "state": "running", "current": 0, "total": 1})
 	}
-	body := map[string]any{"event": "job", "data": map[string]any{
-		"stream-status": "job/pending", "progress": map[string]any{"steps": steps},
-	}}
+	body := map[string]any{"event": "progress", "data": map[string]any{"records": records}}
 	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,13 +189,11 @@ func TestFormatterGroupLimitCountsTreeLeaves(t *testing.T) {
 	if err := f.Handle(formatterRequest{Event: "start", Color: true, PluginConfig: json.RawMessage(`{"max_groups":1}`)}); err != nil {
 		t.Fatal(err)
 	}
-	body := map[string]any{"event": "job", "data": map[string]any{
-		"stream-status": "job/pending",
-		"progress": map[string]any{"steps": []any{
-			map[string]any{"id": 1, "group-path": groupPathValues("deploy", "a"), "state": "running"},
-			map[string]any{"id": 2, "group-path": groupPathValues("deploy", "b"), "state": "running"},
-		}},
-	}}
+	body := recordSnapshot(
+		map[string]any{"id": "status", "label": "Progress", "state": "running", "current": 0, "total": 2},
+		map[string]any{"id": "deploy", "parent": "status", "label": "deploy", "state": "running", "current": 0, "total": 2},
+		map[string]any{"id": "a", "parent": "deploy", "label": "a", "state": "running", "current": 0, "total": 1},
+		map[string]any{"id": "b", "parent": "deploy", "label": "b", "state": "running", "current": 0, "total": 1})
 	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 		t.Fatal(err)
 	}
@@ -248,13 +214,11 @@ func TestFormatterRendersGroupTreeAndKeepsCompletedGroups(t *testing.T) {
 	if err := f.Handle(formatterRequest{Event: "start", Color: true, PluginConfig: json.RawMessage(`{"keep_groups":true}`)}); err != nil {
 		t.Fatal(err)
 	}
-	body := map[string]any{"event": "job", "data": map[string]any{
-		"stream-status": "job/pending",
-		"progress": map[string]any{"steps": []any{
-			map[string]any{"id": 1, "group-path": groupPathValues("deploy", "parallel a"), "label": "done", "state": "success"},
-			map[string]any{"id": 2, "group-path": groupPathValues("deploy", "parallel b"), "label": "work", "state": "running"},
-		}},
-	}}
+	body := recordSnapshot(
+		map[string]any{"id": "status", "label": "Progress", "state": "running", "current": 1, "total": 2},
+		map[string]any{"id": "deploy", "parent": "status", "label": "deploy", "state": "running", "current": 1, "total": 2},
+		map[string]any{"id": "a", "parent": "deploy", "label": "parallel a", "state": "success", "current": 1, "total": 1},
+		map[string]any{"id": "b", "parent": "deploy", "label": "parallel b", "state": "running", "current": 0, "total": 1})
 	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 		t.Fatal(err)
 	}
@@ -267,81 +231,61 @@ func TestFormatterRendersGroupTreeAndKeepsCompletedGroups(t *testing.T) {
 }
 
 func TestDecodeProgressOrdersInterleavedGroupsAsTree(t *testing.T) {
-	body := map[string]any{"event": "job", "data": map[string]any{
-		"stream-status": "job/pending",
-		"progress": map[string]any{"steps": []any{
-			map[string]any{"id": 1, "group-path": groupPathValues("a", "a1"), "state": "running"},
-			map[string]any{"id": 2, "group-path": groupPathValues("b", "b1"), "state": "running"},
-			map[string]any{"id": 3, "group-path": groupPathValues("a", "a2"), "state": "running"},
-		}},
-	}}
+	body := recordSnapshot(
+		map[string]any{"id": "status"},
+		map[string]any{"id": "a", "parent": "status"},
+		map[string]any{"id": "a1", "parent": "a"},
+		map[string]any{"id": "b", "parent": "status"},
+		map[string]any{"id": "b1", "parent": "b"},
+		map[string]any{"id": "a2", "parent": "a"})
 	progresses, _, err := decodeProgresses(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	groups := make([]string, 0)
+	ids := make([]string, 0)
 	for _, p := range progresses {
-		if p.Group != "" {
-			groups = append(groups, p.Group)
+		ids = append(ids, p.ID)
+	}
+	if got, want := strings.Join(ids, ","), "status,a,a1,a2,b,b1"; got != want {
+		t.Fatalf("ids = %q, want %q", got, want)
+	}
+}
+
+func TestDecodeProgressRejectsBrokenTree(t *testing.T) {
+	for _, body := range []any{
+		map[string]any{"id": "child", "parent": "missing"},
+		[]any{map[string]any{"id": "child", "parent": "missing"}},
+		[]any{map[string]any{"id": "a", "parent": "b"}, map[string]any{"id": "b", "parent": "a"}},
+	} {
+		if _, _, err := decodeProgresses(body); err == nil {
+			t.Fatalf("tree %#v was accepted", body)
 		}
 	}
-	if got, want := strings.Join(groups, ","), "a,a1,a2,b,b1"; got != want {
-		t.Fatalf("groups = %q, want %q", got, want)
-	}
 }
 
-func TestDecodeProgressMarksIncompleteGroupFailed(t *testing.T) {
-	body := map[string]any{"event": "job", "data": map[string]any{
-		"stream-status": "job/failure",
-		"progress": map[string]any{"steps": []any{
-			map[string]any{"id": 1, "group": "deploy", "state": "running"},
-			map[string]any{"id": 2, "group": "deploy", "state": "not-started"},
-		}},
-	}}
-	progresses, _, err := decodeProgresses(body)
-	if err != nil {
+func TestFormatterPreservesForestOrder(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := progresses[1].State; got != "failure" {
-		t.Fatalf("group state = %q, want failure", got)
-	}
-}
-
-func TestDecodeProgressDoesNotReserveInternalFieldsForGenericSnapshots(t *testing.T) {
-	body := []any{
-		map[string]any{"id": "same", "_group": []any{"internal"}},
-		map[string]any{"id": "same", "_summary": "internal"},
-	}
-	if _, _, err := decodeProgresses(body); err == nil {
-		t.Fatal("generic duplicate IDs were accepted")
-	}
-	progresses, _, err := decodeProgresses(map[string]any{"id": "work", "label": "Work", "_group_path": "internal"})
-	if err != nil {
+	body := recordSnapshot(
+		map[string]any{"id": "one", "label": "One", "state": "running"},
+		map[string]any{"id": "one-child", "parent": "one", "label": "one child", "state": "running", "current": 0, "total": 1},
+		map[string]any{"id": "two", "label": "Two", "state": "running"},
+		map[string]any{"id": "two-child", "parent": "two", "label": "two child", "state": "running", "current": 0, "total": 1})
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 		t.Fatal(err)
 	}
-	if progresses[0].Group != "" || progresses[0].Label != "Work" {
-		t.Fatalf("progress = %#v", progresses[0])
+	got := out.String()
+	positions := []int{strings.Index(got, "One"), strings.Index(got, "Group: one child"), strings.Index(got, "Two"), strings.Index(got, "Group: two child")}
+	if !slices.IsSorted(positions) || positions[0] < 0 {
+		t.Fatalf("output = %q", got)
 	}
 }
 
-func TestDecodeProgressAllowsInternalGroupIDCollision(t *testing.T) {
-	body := map[string]any{"event": "job", "data": map[string]any{
-		"stream-status": "job/pending",
-		"progress": map[string]any{"steps": []any{
-			map[string]any{"id": "group:1:g", "group": "g", "state": "running"},
-		}},
-	}}
-	if _, _, err := decodeProgresses(body); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func groupPathValues(groups ...string) []any {
-	result := make([]any, len(groups))
-	for i, group := range groups {
-		result[i] = map[string]any{"id": fmt.Sprintf("%d:%s", i, group), "label": group}
-	}
-	return result
+func recordSnapshot(records ...any) map[string]any {
+	return map[string]any{"event": "progress", "data": map[string]any{"records": records}}
 }
 
 func TestFormatterRedrawsTTYSnapshot(t *testing.T) {
