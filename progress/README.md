@@ -14,6 +14,7 @@ for each input item:
 ```json
 {
   "id": "deploy",
+  "parent": "workflow",
   "label": "Deploy instances",
   "state": "running",
   "current": 3,
@@ -23,7 +24,8 @@ for each input item:
 }
 ```
 
-`label` falls back to `id`. `state` defaults to `running`. `current` and
+`parent` optionally links the record into a progress tree. `label` falls back
+to `id`. `state` defaults to `running`. `current` and
 `total` are optional, but must be supplied together. `unit` defaults to
 `steps`.
 
@@ -32,21 +34,22 @@ progress records. Snapshot records require unique `id` values:
 
 ```json
 [
-  {"id":"prepare","label":"Prepare","state":"success"},
-  {"id":"deploy","label":"Deploy","state":"running"},
-  {"id":"verify","label":"Verify","state":"pending"}
+  {"id":"workflow","label":"Overall","state":"running","current":1,"total":3},
+  {"id":"prepare","parent":"workflow","label":"Prepare","state":"success","current":1,"total":1},
+  {"id":"deploy","parent":"workflow","label":"Deploy","state":"running","current":0,"total":1}
 ]
 ```
 
-SSE event envelopes containing `data.progress.steps` are normalized to the
-same snapshot contract automatically. Namespaced keys such as
-`job/progress`, `progress/steps`, and `progress/state` are supported too, so
-compatible streams need only select the formatter with `-o progress`. These
-snapshots include an aggregate bar above the individual step lines.
+SSE event envelopes may put the snapshot array directly in `data`, or in
+`data.records`. Parent records must exist in the same snapshot and trees must
+not contain cycles. In a terminal, child records with `current` and `total`
+render as a tree of bars. Child records without counts remain available in
+redirected output as log details. Up to four active leaf bars are shown and
+further active leaves are collapsed into an overflow count.
 
 The formatter redraws the progress lines when Restish enables terminal
-formatting. Redirected or colour-disabled output emits only records changed
-since the previous snapshot, which remains readable in logs and pipes.
+formatting. Redirected or colour-disabled output emits only changed step
+records, which remains readable in logs and pipes.
 
 ```text
 66% ████████████████░░░░░░░░  Deploy instances  2/3 steps  running: applying changes
@@ -87,13 +90,20 @@ wanted.
 ## Customise
 
 The defaults use a 24-character Unicode bar with a red-to-pink gradient. Set a
-persistent style under `plugins.progress` in `restish.json`:
+global persistent style for every `-o progress` invocation under
+`plugins.progress` in `restish.json`:
 
 ```json
 {
   "plugins": {
     "progress": {
       "width": 32,
+      "max_groups": 6,
+      "keep_groups": true,
+      "group_prefix": "Phase:",
+      "success_icon": "done",
+      "failure_icon": "failed",
+      "cancelled_icon": "stopped",
       "color_start": "#7c3aed",
       "color_end": "#22d3ee",
       "fill": "━",
@@ -110,6 +120,12 @@ variables override them for a single invocation:
 | Field | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `width` | `RSH_PROGRESS_WIDTH` | `24` | Bar width from 1 to 200 |
+| `max_groups` | `RSH_PROGRESS_MAX_GROUPS` | `4` | Active group bars from 1 to 20 |
+| `keep_groups` | `RSH_PROGRESS_KEEP_GROUPS` | `false` | Keep completed group bars with status icons |
+| `group_prefix` | `RSH_PROGRESS_GROUP_PREFIX` | `Group:` | Prefix for top-level tree groups; empty disables it |
+| `success_icon` | `RSH_PROGRESS_SUCCESS_ICON` | `✅` | Successful group icon; empty disables it |
+| `failure_icon` | `RSH_PROGRESS_FAILURE_ICON` | `❌` | Failed group icon; empty disables it |
+| `cancelled_icon` | `RSH_PROGRESS_CANCELLED_ICON` | `🚫` | Cancelled group icon; empty disables it |
 | `color` | `RSH_PROGRESS_COLOR` | empty | Solid colour overriding the gradient |
 | `color_start` | `RSH_PROGRESS_COLOR_START` | `#ff3b30` | Gradient start colour |
 | `color_end` | `RSH_PROGRESS_COLOR_END` | `#ff2d95` | Gradient end colour |
