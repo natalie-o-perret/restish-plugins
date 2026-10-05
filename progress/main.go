@@ -15,27 +15,35 @@ import (
 )
 
 type barStyle struct {
-	Width      int
-	MaxGroups  int
-	KeepGroups bool
-	ColorStart rgb
-	ColorEnd   rgb
-	Fill       string
-	Head       string
-	Empty      string
-	Start      string
-	End        string
+	Width         int
+	MaxGroups     int
+	KeepGroups    bool
+	GroupPrefix   string
+	SuccessIcon   string
+	FailureIcon   string
+	CancelledIcon string
+	ColorStart    rgb
+	ColorEnd      rgb
+	Fill          string
+	Head          string
+	Empty         string
+	Start         string
+	End           string
 }
 
 func defaultBarStyle() barStyle {
 	return barStyle{
-		Width:      24,
-		MaxGroups:  4,
-		ColorStart: rgb{R: 255, G: 59, B: 48},
-		ColorEnd:   rgb{R: 255, G: 45, B: 149},
-		Fill:       "█",
-		Head:       "█",
-		Empty:      "░",
+		Width:         24,
+		MaxGroups:     4,
+		GroupPrefix:   "Group:",
+		SuccessIcon:   "✅",
+		FailureIcon:   "❌",
+		CancelledIcon: "🚫",
+		ColorStart:    rgb{R: 255, G: 59, B: 48},
+		ColorEnd:      rgb{R: 255, G: 45, B: 149},
+		Fill:          "█",
+		Head:          "█",
+		Empty:         "░",
 	}
 }
 
@@ -74,17 +82,21 @@ type formatterRequest struct {
 }
 
 type barStyleConfig struct {
-	Width      *int    `json:"width"`
-	MaxGroups  *int    `json:"max_groups"`
-	KeepGroups *bool   `json:"keep_groups"`
-	Color      *string `json:"color"`
-	ColorStart *string `json:"color_start"`
-	ColorEnd   *string `json:"color_end"`
-	Fill       *string `json:"fill"`
-	Head       *string `json:"head"`
-	Empty      *string `json:"empty"`
-	Start      *string `json:"start"`
-	End        *string `json:"end"`
+	Width         *int    `json:"width"`
+	MaxGroups     *int    `json:"max_groups"`
+	KeepGroups    *bool   `json:"keep_groups"`
+	GroupPrefix   *string `json:"group_prefix"`
+	SuccessIcon   *string `json:"success_icon"`
+	FailureIcon   *string `json:"failure_icon"`
+	CancelledIcon *string `json:"cancelled_icon"`
+	Color         *string `json:"color"`
+	ColorStart    *string `json:"color_start"`
+	ColorEnd      *string `json:"color_end"`
+	Fill          *string `json:"fill"`
+	Head          *string `json:"head"`
+	Empty         *string `json:"empty"`
+	Start         *string `json:"start"`
+	End           *string `json:"end"`
 }
 
 type formatter struct {
@@ -376,7 +388,7 @@ func (f *formatter) write(progresses []progress, snapshot bool) error {
 	}
 	lines := rendered
 	if f.tty {
-		lines = renderTTYLines(progresses, rendered)
+		lines = renderTTYLines(progresses, rendered, f.style)
 	}
 
 	if !f.tty {
@@ -474,7 +486,7 @@ func render(p progress, style barStyle, color bool) (string, error) {
 	return renderBarCells(line, style, color), nil
 }
 
-func renderTTYLines(progresses []progress, rendered []string) []string {
+func renderTTYLines(progresses []progress, rendered []string, style barStyle) []string {
 	lines := make([]string, 0, len(rendered))
 	var previousPath []progressGroup
 	for i, p := range progresses {
@@ -491,10 +503,13 @@ func renderTTYLines(progresses []progress, rendered []string) []string {
 		for depth := common; depth < len(path); depth++ {
 			label := singleLine(path[depth].Label)
 			if depth == len(path)-1 {
-				label += stateIcon(p.State)
+				label += stateIcon(style, p.State)
 			}
 			if depth == 0 {
-				lines = append(lines, "Group: "+label)
+				if style.GroupPrefix != "" {
+					label = style.GroupPrefix + " " + label
+				}
+				lines = append(lines, label)
 			} else {
 				branch := "└─ "
 				if hasLaterGroupSibling(progresses, i, path, depth) {
@@ -553,17 +568,20 @@ func hasLaterGroupSibling(progresses []progress, index int, path []progressGroup
 	return false
 }
 
-func stateIcon(state string) string {
+func stateIcon(style barStyle, state string) string {
+	var icon string
 	switch state {
 	case "success":
-		return " ✅"
+		icon = style.SuccessIcon
 	case "failure", "failed", "error":
-		return " ❌"
+		icon = style.FailureIcon
 	case "cancelled", "canceled":
-		return " 🚫"
-	default:
+		icon = style.CancelledIcon
+	}
+	if icon == "" {
 		return ""
 	}
+	return " " + icon
 }
 
 func renderBarCells(line string, style barStyle, color bool) string {
@@ -688,6 +706,10 @@ func barStyleFromConfig(raw json.RawMessage) (barStyle, error) {
 			value  *string
 			target *string
 		}{
+			{config.GroupPrefix, &style.GroupPrefix},
+			{config.SuccessIcon, &style.SuccessIcon},
+			{config.FailureIcon, &style.FailureIcon},
+			{config.CancelledIcon, &style.CancelledIcon},
 			{config.Fill, &style.Fill},
 			{config.Head, &style.Head},
 			{config.Empty, &style.Empty},
@@ -722,11 +744,15 @@ func barStyleFromConfig(raw json.RawMessage) (barStyle, error) {
 		style.KeepGroups = keepGroups
 	}
 	for name, target := range map[string]*string{
-		"RSH_PROGRESS_FILL":  &style.Fill,
-		"RSH_PROGRESS_HEAD":  &style.Head,
-		"RSH_PROGRESS_EMPTY": &style.Empty,
-		"RSH_PROGRESS_START": &style.Start,
-		"RSH_PROGRESS_END":   &style.End,
+		"RSH_PROGRESS_GROUP_PREFIX":   &style.GroupPrefix,
+		"RSH_PROGRESS_SUCCESS_ICON":   &style.SuccessIcon,
+		"RSH_PROGRESS_FAILURE_ICON":   &style.FailureIcon,
+		"RSH_PROGRESS_CANCELLED_ICON": &style.CancelledIcon,
+		"RSH_PROGRESS_FILL":           &style.Fill,
+		"RSH_PROGRESS_HEAD":           &style.Head,
+		"RSH_PROGRESS_EMPTY":          &style.Empty,
+		"RSH_PROGRESS_START":          &style.Start,
+		"RSH_PROGRESS_END":            &style.End,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value

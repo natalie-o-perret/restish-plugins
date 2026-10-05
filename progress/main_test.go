@@ -211,7 +211,11 @@ func TestFormatterGroupLimitCountsTreeLeaves(t *testing.T) {
 func TestFormatterRendersGroupTreeAndKeepsCompletedGroups(t *testing.T) {
 	var out bytes.Buffer
 	f := &formatter{w: &out, style: defaultBarStyle()}
-	if err := f.Handle(formatterRequest{Event: "start", Color: true, PluginConfig: json.RawMessage(`{"keep_groups":true}`)}); err != nil {
+	if err := f.Handle(formatterRequest{Event: "start", Color: true, PluginConfig: json.RawMessage(`{
+		"keep_groups": true,
+		"group_prefix": "Phase:",
+		"success_icon": "done"
+	}`)}); err != nil {
 		t.Fatal(err)
 	}
 	body := recordSnapshot(
@@ -223,7 +227,7 @@ func TestFormatterRendersGroupTreeAndKeepsCompletedGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"Group: deploy\n", "  ├─ parallel a ✅\n", "  └─ parallel b\n"} {
+	for _, want := range []string{"Phase: deploy\n", "  ├─ parallel a done\n", "  └─ parallel b\n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want %q", got, want)
 		}
@@ -340,12 +344,18 @@ func TestBarStyleFromConfigAndEnv(t *testing.T) {
 	t.Setenv("RSH_PROGRESS_WIDTH", "5")
 	t.Setenv("RSH_PROGRESS_MAX_GROUPS", "3")
 	t.Setenv("RSH_PROGRESS_KEEP_GROUPS", "true")
+	t.Setenv("RSH_PROGRESS_GROUP_PREFIX", "Phase:")
+	t.Setenv("RSH_PROGRESS_SUCCESS_ICON", "ok")
 	t.Setenv("RSH_PROGRESS_COLOR", "magenta")
 	t.Setenv("RSH_PROGRESS_HEAD", ">")
 	style, err := barStyleFromConfig(json.RawMessage(`{
 		"width": 4,
 		"max_groups": 2,
 		"keep_groups": false,
+		"group_prefix": "Task:",
+		"success_icon": "done",
+		"failure_icon": "failed",
+		"cancelled_icon": "stopped",
 		"color_start": "#7c3aed",
 		"color_end": "#22d3ee",
 		"fill": "=",
@@ -365,6 +375,9 @@ func TestBarStyleFromConfigAndEnv(t *testing.T) {
 	}
 	if !style.KeepGroups {
 		t.Fatal("keep groups = false, want true")
+	}
+	if style.GroupPrefix != "Phase:" || style.SuccessIcon != "ok" || style.FailureIcon != "failed" || style.CancelledIcon != "stopped" {
+		t.Fatalf("tree style = %#v", style)
 	}
 	current, total := int64(1), int64(2)
 	got, err := render(progress{Label: "work", State: "running", Current: &current, Total: &total}, style, false)

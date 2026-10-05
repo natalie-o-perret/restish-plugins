@@ -90,7 +90,8 @@ wanted.
 ## Customise
 
 The defaults use a 24-character Unicode bar with a red-to-pink gradient. Set a
-persistent style under `plugins.progress` in `restish.json`:
+global persistent style for every `-o progress` invocation under
+`plugins.progress` in `restish.json`:
 
 ```json
 {
@@ -99,6 +100,10 @@ persistent style under `plugins.progress` in `restish.json`:
       "width": 32,
       "max_groups": 6,
       "keep_groups": true,
+      "group_prefix": "Phase:",
+      "success_icon": "done",
+      "failure_icon": "failed",
+      "cancelled_icon": "stopped",
       "color_start": "#7c3aed",
       "color_end": "#22d3ee",
       "fill": "━",
@@ -117,6 +122,10 @@ variables override them for a single invocation:
 | `width` | `RSH_PROGRESS_WIDTH` | `24` | Bar width from 1 to 200 |
 | `max_groups` | `RSH_PROGRESS_MAX_GROUPS` | `4` | Active group bars from 1 to 20 |
 | `keep_groups` | `RSH_PROGRESS_KEEP_GROUPS` | `false` | Keep completed group bars with status icons |
+| `group_prefix` | `RSH_PROGRESS_GROUP_PREFIX` | `Group:` | Prefix for top-level tree groups; empty disables it |
+| `success_icon` | `RSH_PROGRESS_SUCCESS_ICON` | `✅` | Successful group icon; empty disables it |
+| `failure_icon` | `RSH_PROGRESS_FAILURE_ICON` | `❌` | Failed group icon; empty disables it |
+| `cancelled_icon` | `RSH_PROGRESS_CANCELLED_ICON` | `🚫` | Cancelled group icon; empty disables it |
 | `color` | `RSH_PROGRESS_COLOR` | empty | Solid colour overriding the gradient |
 | `color_start` | `RSH_PROGRESS_COLOR_START` | `#ff3b30` | Gradient start colour |
 | `color_end` | `RSH_PROGRESS_COLOR_END` | `#ff2d95` | Gradient end colour |
