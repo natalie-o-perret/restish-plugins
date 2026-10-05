@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -153,6 +154,18 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("encode progress record: %w", err)
 	}
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, false, fmt.Errorf("decode progress record: %w", err)
+	}
+	if normalized, ok := normalizeProgressInput(decoded); ok {
+		raw, err = json.Marshal(normalized)
+		if err != nil {
+			return nil, false, fmt.Errorf("encode normalized progress record: %w", err)
+		}
+	}
 	if len(raw) == 0 || raw[0] != '[' {
 		p, err := decodeProgress(json.RawMessage(raw))
 		return []progress{p}, false, err
@@ -179,6 +192,83 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 		progresses[i] = p
 	}
 	return progresses, true, nil
+}
+
+func normalizeProgressInput(value any) (any, bool) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return value, false
+	}
+	eventValue, event := objectField(root, "event")
+	if data, ok := objectField(root, "data"); ok {
+		if object, ok := data.(map[string]any); ok {
+			root = object
+		}
+	}
+	if progressValue, ok := objectField(root, "progress"); ok {
+		if progressObject, ok := progressValue.(map[string]any); ok {
+			if stepsValue, ok := objectField(progressObject, "steps"); ok {
+				if steps, ok := stepsValue.([]any); ok {
+					records := make([]any, 0, len(steps))
+					for _, stepValue := range steps {
+						step, ok := stepValue.(map[string]any)
+						if !ok {
+							return value, false
+						}
+						record := make(map[string]any)
+						for _, name := range []string{"id", "label", "state", "current", "total", "unit", "message"} {
+							if field, ok := objectField(step, name); ok {
+								record[name] = field
+							}
+						}
+						if id, ok := record["id"]; ok {
+							record["id"] = fmt.Sprint(id)
+						}
+						if group, ok := objectField(step, "group"); ok && fmt.Sprint(group) != "" {
+							if label, ok := record["label"]; ok && fmt.Sprint(label) != "" {
+								record["label"] = fmt.Sprintf("%v: %v", group, label)
+							}
+						}
+						if _, ok := record["message"]; !ok {
+							if reason, ok := objectField(step, "reason"); ok {
+								record["message"] = reason
+							} else if target, ok := objectField(step, "target"); ok {
+								record["message"] = target
+							}
+						}
+						records = append(records, record)
+					}
+					return records, true
+				}
+			}
+		}
+	}
+	if event {
+		state := fmt.Sprint(eventValue)
+		message := ""
+		if status, ok := objectField(root, "status"); ok {
+			state = fmt.Sprint(status)
+			if _, suffix, found := strings.Cut(state, "/"); found {
+				state = suffix
+			}
+		} else if state == "timeout" {
+			state, message = "error", "timeout"
+		}
+		return []any{map[string]any{"id": "status", "label": "Progress", "state": state, "message": message}}, true
+	}
+	return value, false
+}
+
+func objectField(object map[string]any, name string) (any, bool) {
+	if value, ok := object[name]; ok {
+		return value, true
+	}
+	for key, value := range object {
+		if strings.HasSuffix(key, "/"+name) {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func decodeProgress(value any) (progress, error) {

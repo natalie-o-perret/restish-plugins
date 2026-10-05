@@ -38,6 +38,11 @@ progress records. Snapshot records require unique `id` values:
 ]
 ```
 
+SSE event envelopes containing `data.progress.steps` are normalized to the
+same snapshot contract automatically. Namespaced keys such as
+`job/progress`, `progress/steps`, and `progress/state` are supported too, so
+compatible streams need only select the formatter with `-o progress`.
+
 The formatter redraws the progress lines when Restish enables terminal
 formatting. Redirected or colour-disabled output emits only records changed
 since the previous snapshot, which remains readable in logs and pipes.

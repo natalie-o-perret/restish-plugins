@@ -99,6 +99,38 @@ func TestFormatterStreamsChangedSnapshotRecords(t *testing.T) {
 	}
 }
 
+func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	for _, body := range []any{
+		map[string]any{
+			"event": "job",
+			"data": map[string]any{
+				"job/progress": map[string]any{
+					"progress/steps": []any{
+						map[string]any{
+							"progress/id":     8,
+							"progress/group":  "rescue",
+							"progress/label":  "sleep 2",
+							"progress/state":  "dispatched",
+							"progress/target": "host-a",
+						},
+					},
+				},
+			},
+		},
+		map[string]any{"event": "eof", "data": map[string]any{"status": "job/success"}},
+	} {
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "rescue: sleep 2  dispatched: host-a\nProgress  success\n"
+	if got := out.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestFormatterRedrawsTTYSnapshot(t *testing.T) {
 	var out bytes.Buffer
 	f := &formatter{w: &out, style: defaultBarStyle()}
