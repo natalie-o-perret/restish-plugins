@@ -106,6 +106,7 @@ func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
 		map[string]any{
 			"event": "job",
 			"data": map[string]any{
+				"job/stream-status": "job/pending",
 				"job/progress": map[string]any{
 					"progress/steps": []any{
 						map[string]any{
@@ -125,7 +126,9 @@ func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := "rescue: sleep 2  dispatched: host-a\nProgress  success\n"
+	want := "0% ░░░░░░░░░░░░░░░░░░░░░░░░  Progress  0/1 step  running: rescue: sleep 2\n" +
+		"rescue: sleep 2  dispatched: host-a\n" +
+		"100% ████████████████████████  Progress  1/1 step  success\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}

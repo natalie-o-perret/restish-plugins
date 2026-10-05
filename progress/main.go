@@ -238,6 +238,41 @@ func normalizeProgressInput(value any) (any, bool) {
 						}
 						records = append(records, record)
 					}
+					if len(records) > 0 {
+						state := "running"
+						if status, ok := objectField(root, "stream-status"); ok {
+							state = fmt.Sprint(status)
+							if _, suffix, found := strings.Cut(state, "/"); found {
+								state = suffix
+							}
+							if state == "pending" {
+								state = "running"
+							}
+						}
+						current := 0
+						message := ""
+						for _, recordValue := range records {
+							record := recordValue.(map[string]any)
+							recordState := fmt.Sprint(record["state"])
+							if terminalState(recordState) {
+								current++
+							}
+							if recordState == "dispatched" || recordState == "running" {
+								message = fmt.Sprint(record["label"])
+							}
+						}
+						if terminalState(state) {
+							current = len(records)
+						}
+						records = append([]any{map[string]any{
+							"id":      "status",
+							"label":   "Progress",
+							"state":   state,
+							"current": current,
+							"total":   len(records),
+							"message": message,
+						}}, records...)
+					}
 					return records, true
 				}
 			}
@@ -254,7 +289,10 @@ func normalizeProgressInput(value any) (any, bool) {
 		} else if state == "timeout" {
 			state, message = "error", "timeout"
 		}
-		return []any{map[string]any{"id": "status", "label": "Progress", "state": state, "message": message}}, true
+		return []any{map[string]any{
+			"id": "status", "label": "Progress", "state": state,
+			"current": 1, "total": 1, "message": message,
+		}}, true
 	}
 	return value, false
 }
@@ -400,6 +438,7 @@ func render(p progress, style barStyle, color bool) (string, error) {
 		progressbar.OptionSetTheme(theme),
 		progressbar.OptionSetPredictTime(false),
 		progressbar.OptionSetElapsedTime(false),
+		progressbar.OptionSetRenderBlankState(true),
 		progressbar.OptionShowDescriptionAtLineEnd(),
 		progressbar.OptionSetDescription(progressDescription(p)),
 	)
