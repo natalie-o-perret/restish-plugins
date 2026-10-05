@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -74,11 +75,12 @@ type barStyleConfig struct {
 }
 
 type formatter struct {
-	w        io.Writer
-	tty      bool
-	active   bool
-	lastLine string
-	style    barStyle
+	w           io.Writer
+	tty         bool
+	activeLines int
+	lastLines   []string
+	lastByID    map[string]string
+	style       barStyle
 }
 
 func main() {
@@ -129,21 +131,54 @@ func (f *formatter) Handle(req formatterRequest) error {
 		if req.Response.Body == nil {
 			return nil
 		}
-		p, err := decodeProgress(req.Response.Body)
+		progresses, snapshot, err := decodeProgresses(req.Response.Body)
 		if err != nil {
 			return err
 		}
-		return f.write(p)
+		return f.write(progresses, snapshot)
 	case "end":
-		if f.tty && f.active {
+		if f.tty && f.activeLines > 0 {
 			_, err := fmt.Fprintln(f.w)
-			f.active = false
+			f.activeLines = 0
 			return err
 		}
 		return nil
 	default:
 		return fmt.Errorf("unsupported formatter event %q", req.Event)
 	}
+}
+
+func decodeProgresses(value any) ([]progress, bool, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode progress record: %w", err)
+	}
+	if len(raw) == 0 || raw[0] != '[' {
+		p, err := decodeProgress(json.RawMessage(raw))
+		return []progress{p}, false, err
+	}
+
+	var records []json.RawMessage
+	if err := json.Unmarshal(raw, &records); err != nil {
+		return nil, true, fmt.Errorf("decode progress snapshot: %w", err)
+	}
+	progresses := make([]progress, len(records))
+	ids := make(map[string]struct{}, len(records))
+	for i, record := range records {
+		p, err := decodeProgress(record)
+		if err != nil {
+			return nil, true, fmt.Errorf("progress snapshot item %d: %w", i, err)
+		}
+		if p.ID == "" {
+			return nil, true, fmt.Errorf("progress snapshot item %d requires id", i)
+		}
+		if _, exists := ids[p.ID]; exists {
+			return nil, true, fmt.Errorf("progress snapshot contains duplicate id %q", p.ID)
+		}
+		ids[p.ID] = struct{}{}
+		progresses[i] = p
+	}
+	return progresses, true, nil
 }
 
 func decodeProgress(value any) (progress, error) {
@@ -179,26 +214,80 @@ func decodeProgress(value any) (progress, error) {
 	return p, nil
 }
 
-func (f *formatter) write(p progress) error {
-	line, err := render(p, f.style, f.tty)
-	if err != nil {
-		return err
+func (f *formatter) write(progresses []progress, snapshot bool) error {
+	lines := make([]string, len(progresses))
+	terminal := len(progresses) > 0
+	for i, p := range progresses {
+		line, err := render(p, f.style, f.tty)
+		if err != nil {
+			return err
+		}
+		lines[i] = line
+		terminal = terminal && terminalState(p.State)
 	}
-	if line == f.lastLine {
+
+	if !f.tty {
+		if !snapshot {
+			if slices.Equal(lines, f.lastLines) {
+				return nil
+			}
+			f.lastLines = slices.Clone(lines)
+			_, err := fmt.Fprintln(f.w, lines[0])
+			return err
+		}
+		if f.lastByID == nil {
+			f.lastByID = make(map[string]string)
+		}
+		next := make(map[string]string, len(progresses))
+		for i, p := range progresses {
+			next[p.ID] = lines[i]
+			if f.lastByID[p.ID] != lines[i] {
+				if _, err := fmt.Fprintln(f.w, lines[i]); err != nil {
+					return err
+				}
+			}
+		}
+		f.lastByID = next
 		return nil
 	}
-	f.lastLine = line
-	if !f.tty {
-		_, err := fmt.Fprintln(f.w, line)
+
+	if slices.Equal(lines, f.lastLines) {
+		return nil
+	}
+	rows := max(f.activeLines, len(lines))
+	if _, err := fmt.Fprint(f.w, "\r"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(f.w, "\r\x1b[2K%s", line); err != nil {
-		return err
+	if f.activeLines > 1 {
+		if _, err := fmt.Fprintf(f.w, "\x1b[%dA", f.activeLines-1); err != nil {
+			return err
+		}
 	}
-	f.active = true
-	if terminalState(p.State) {
+	for i := range rows {
+		if i > 0 {
+			if _, err := fmt.Fprint(f.w, "\n\r"); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprint(f.w, "\x1b[2K"); err != nil {
+			return err
+		}
+		if i < len(lines) {
+			if _, err := fmt.Fprint(f.w, lines[i]); err != nil {
+				return err
+			}
+		}
+	}
+	if rows > len(lines) && len(lines) > 0 {
+		if _, err := fmt.Fprintf(f.w, "\x1b[%dA", rows-len(lines)); err != nil {
+			return err
+		}
+	}
+	f.lastLines = slices.Clone(lines)
+	f.activeLines = len(lines)
+	if terminal && f.activeLines > 0 {
 		_, err := fmt.Fprintln(f.w)
-		f.active = false
+		f.activeLines = 0
 		return err
 	}
 	return nil

@@ -27,9 +27,20 @@ for each input item:
 `total` are optional, but must be supplied together. `unit` defaults to
 `steps`.
 
-The formatter redraws one terminal line when Restish enables terminal
-formatting. Redirected or colour-disabled output uses one line per changed
-record, which remains readable in logs and pipes.
+An input item may also be an array containing a complete snapshot of multiple
+progress records. Snapshot records require unique `id` values:
+
+```json
+[
+  {"id":"prepare","label":"Prepare","state":"success"},
+  {"id":"deploy","label":"Deploy","state":"running"},
+  {"id":"verify","label":"Verify","state":"pending"}
+]
+```
+
+The formatter redraws the progress lines when Restish enables terminal
+formatting. Redirected or colour-disabled output emits only records changed
+since the previous snapshot, which remains readable in logs and pipes.
 
 ```text
 66% ████████████████░░░░░░░░  Deploy instances  2/3 steps  running: applying changes
