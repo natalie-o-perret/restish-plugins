@@ -41,12 +41,15 @@ progress records. Snapshot records require unique `id` values:
 SSE event envelopes containing `data.progress.steps` are normalized to the
 same snapshot contract automatically. Namespaced keys such as
 `job/progress`, `progress/steps`, and `progress/state` are supported too, so
-compatible streams need only select the formatter with `-o progress`. These
-snapshots include an aggregate bar above the individual step lines.
+compatible streams need only select the formatter with `-o progress`. In a
+terminal, these snapshots show an aggregate bar and up to four active group
+bars. Further active groups are collapsed into an overflow count.
+An optional `group-path` array of `{id, label}` objects renders nested groups
+as a tree. Streams with only `group` continue to render a flat group list.
 
 The formatter redraws the progress lines when Restish enables terminal
-formatting. Redirected or colour-disabled output emits only records changed
-since the previous snapshot, which remains readable in logs and pipes.
+formatting. Redirected or colour-disabled output emits only changed step
+records, which remains readable in logs and pipes.
 
 ```text
 66% ████████████████░░░░░░░░  Deploy instances  2/3 steps  running: applying changes
@@ -94,6 +97,8 @@ persistent style under `plugins.progress` in `restish.json`:
   "plugins": {
     "progress": {
       "width": 32,
+      "max_groups": 6,
+      "keep_groups": true,
       "color_start": "#7c3aed",
       "color_end": "#22d3ee",
       "fill": "━",
@@ -110,6 +115,8 @@ variables override them for a single invocation:
 | Field | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `width` | `RSH_PROGRESS_WIDTH` | `24` | Bar width from 1 to 200 |
+| `max_groups` | `RSH_PROGRESS_MAX_GROUPS` | `4` | Active group bars from 1 to 20 |
+| `keep_groups` | `RSH_PROGRESS_KEEP_GROUPS` | `false` | Keep completed group bars with status icons |
 | `color` | `RSH_PROGRESS_COLOR` | empty | Solid colour overriding the gradient |
 | `color_start` | `RSH_PROGRESS_COLOR_START` | `#ff3b30` | Gradient start colour |
 | `color_end` | `RSH_PROGRESS_COLOR_END` | `#ff2d95` | Gradient end colour |

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -49,6 +50,16 @@ func TestRenderUsesCustomUnit(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("render() = %q, want %q", got, want)
+	}
+}
+
+func TestRenderKeepsProgressOnOneTerminalLine(t *testing.T) {
+	got, err := render(progress{Label: "line one\nline two", Message: "more\nwork"}, defaultBarStyle(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("render() = %q", got)
 	}
 }
 
@@ -172,9 +183,165 @@ func TestFormatterShowsOnlySnapshotSummaryOnTTY(t *testing.T) {
 	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "Progress") || strings.Contains(got, "dispatched: host-a") {
+	if got := out.String(); !strings.Contains(got, "Progress") || !strings.Contains(got, "Group: rescue\n") || strings.Contains(got, "dispatched: host-a") {
 		t.Fatalf("output = %q", got)
 	}
+}
+
+func TestFormatterLimitsActiveGroupsOnTTY(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	if err := f.Handle(formatterRequest{Event: "start", Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	steps := make([]any, 5)
+	for i := range steps {
+		steps[i] = map[string]any{"id": i, "group": fmt.Sprintf("parallel %d", i+1), "label": "work", "state": "running"}
+	}
+	body := map[string]any{"event": "job", "data": map[string]any{
+		"stream-status": "job/pending", "progress": map[string]any{"steps": steps},
+	}}
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Group: parallel 1\n", "Group: parallel 4\n", "+1 other active groups"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "Group: parallel 5\n") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestFormatterGroupLimitCountsTreeLeaves(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	if err := f.Handle(formatterRequest{Event: "start", Color: true, PluginConfig: json.RawMessage(`{"max_groups":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"event": "job", "data": map[string]any{
+		"stream-status": "job/pending",
+		"progress": map[string]any{"steps": []any{
+			map[string]any{"id": 1, "group-path": groupPathValues("deploy", "a"), "state": "running"},
+			map[string]any{"id": 2, "group-path": groupPathValues("deploy", "b"), "state": "running"},
+		}},
+	}}
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Group: deploy\n", "  └─ a\n", "+1 other active groups"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "  └─ b\n") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestFormatterRendersGroupTreeAndKeepsCompletedGroups(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	if err := f.Handle(formatterRequest{Event: "start", Color: true, PluginConfig: json.RawMessage(`{"keep_groups":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"event": "job", "data": map[string]any{
+		"stream-status": "job/pending",
+		"progress": map[string]any{"steps": []any{
+			map[string]any{"id": 1, "group-path": groupPathValues("deploy", "parallel a"), "label": "done", "state": "success"},
+			map[string]any{"id": 2, "group-path": groupPathValues("deploy", "parallel b"), "label": "work", "state": "running"},
+		}},
+	}}
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Group: deploy\n", "  ├─ parallel a ✅\n", "  └─ parallel b\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestDecodeProgressOrdersInterleavedGroupsAsTree(t *testing.T) {
+	body := map[string]any{"event": "job", "data": map[string]any{
+		"stream-status": "job/pending",
+		"progress": map[string]any{"steps": []any{
+			map[string]any{"id": 1, "group-path": groupPathValues("a", "a1"), "state": "running"},
+			map[string]any{"id": 2, "group-path": groupPathValues("b", "b1"), "state": "running"},
+			map[string]any{"id": 3, "group-path": groupPathValues("a", "a2"), "state": "running"},
+		}},
+	}}
+	progresses, _, err := decodeProgresses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := make([]string, 0)
+	for _, p := range progresses {
+		if p.Group != "" {
+			groups = append(groups, p.Group)
+		}
+	}
+	if got, want := strings.Join(groups, ","), "a,a1,a2,b,b1"; got != want {
+		t.Fatalf("groups = %q, want %q", got, want)
+	}
+}
+
+func TestDecodeProgressMarksIncompleteGroupFailed(t *testing.T) {
+	body := map[string]any{"event": "job", "data": map[string]any{
+		"stream-status": "job/failure",
+		"progress": map[string]any{"steps": []any{
+			map[string]any{"id": 1, "group": "deploy", "state": "running"},
+			map[string]any{"id": 2, "group": "deploy", "state": "not-started"},
+		}},
+	}}
+	progresses, _, err := decodeProgresses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := progresses[1].State; got != "failure" {
+		t.Fatalf("group state = %q, want failure", got)
+	}
+}
+
+func TestDecodeProgressDoesNotReserveInternalFieldsForGenericSnapshots(t *testing.T) {
+	body := []any{
+		map[string]any{"id": "same", "_group": []any{"internal"}},
+		map[string]any{"id": "same", "_summary": "internal"},
+	}
+	if _, _, err := decodeProgresses(body); err == nil {
+		t.Fatal("generic duplicate IDs were accepted")
+	}
+	progresses, _, err := decodeProgresses(map[string]any{"id": "work", "label": "Work", "_group_path": "internal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progresses[0].Group != "" || progresses[0].Label != "Work" {
+		t.Fatalf("progress = %#v", progresses[0])
+	}
+}
+
+func TestDecodeProgressAllowsInternalGroupIDCollision(t *testing.T) {
+	body := map[string]any{"event": "job", "data": map[string]any{
+		"stream-status": "job/pending",
+		"progress": map[string]any{"steps": []any{
+			map[string]any{"id": "group:1:g", "group": "g", "state": "running"},
+		}},
+	}}
+	if _, _, err := decodeProgresses(body); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func groupPathValues(groups ...string) []any {
+	result := make([]any, len(groups))
+	for i, group := range groups {
+		result[i] = map[string]any{"id": fmt.Sprintf("%d:%s", i, group), "label": group}
+	}
+	return result
 }
 
 func TestFormatterRedrawsTTYSnapshot(t *testing.T) {
@@ -227,10 +394,14 @@ func TestDecodeProgressSnapshotRequiresUniqueIDs(t *testing.T) {
 
 func TestBarStyleFromConfigAndEnv(t *testing.T) {
 	t.Setenv("RSH_PROGRESS_WIDTH", "5")
+	t.Setenv("RSH_PROGRESS_MAX_GROUPS", "3")
+	t.Setenv("RSH_PROGRESS_KEEP_GROUPS", "true")
 	t.Setenv("RSH_PROGRESS_COLOR", "magenta")
 	t.Setenv("RSH_PROGRESS_HEAD", ">")
 	style, err := barStyleFromConfig(json.RawMessage(`{
 		"width": 4,
+		"max_groups": 2,
+		"keep_groups": false,
 		"color_start": "#7c3aed",
 		"color_end": "#22d3ee",
 		"fill": "=",
@@ -244,6 +415,12 @@ func TestBarStyleFromConfigAndEnv(t *testing.T) {
 	}
 	if style.ColorStart != (rgb{R: 255, B: 255}) || style.ColorEnd != (rgb{R: 255, B: 255}) {
 		t.Fatalf("solid colour = %#v -> %#v", style.ColorStart, style.ColorEnd)
+	}
+	if style.MaxGroups != 3 {
+		t.Fatalf("max groups = %d, want 3", style.MaxGroups)
+	}
+	if !style.KeepGroups {
+		t.Fatal("keep groups = false, want true")
 	}
 	current, total := int64(1), int64(2)
 	got, err := render(progress{Label: "work", State: "running", Current: &current, Total: &total}, style, false)
@@ -266,6 +443,7 @@ func TestBarStyleFromConfigRejectsInvalidValues(t *testing.T) {
 	for _, config := range []string{
 		`null`,
 		`{"width":0}`,
+		`{"max_groups":0}`,
 		`{"color":"orange"}`,
 		`{"fill":""}`,
 	} {
