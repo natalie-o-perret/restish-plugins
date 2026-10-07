@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/rest-sh/restish/v2/plugin"
+	"github.com/rivo/uniseg"
 )
 
 func TestFormatterStreamsProgress(t *testing.T) {
@@ -137,6 +140,135 @@ func TestFormatterNormalizesSSEProgressSnapshots(t *testing.T) {
 		"sleep 2  success: host-a\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestFormatterInfersProgressEventSequence(t *testing.T) {
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	for _, body := range []any{
+		map[string]any{"event": "started", "data": map[string]any{"total": 2}},
+		map[string]any{"event": "upstream", "data": map[string]any{"duration_ms": 100, "status": "ok", "upstream": "kms/ch-gva-2"}},
+		map[string]any{"event": "upstream", "data": map[string]any{"duration_ms": 200, "status": "ok", "upstream": "root-api/ch-gva-2"}},
+		map[string]any{"event": "complete", "data": map[string]any{"failed": 0, "succeeded": 2, "total": 2}},
+	} {
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Progress  0/2 steps  running",
+		"Progress  1/2 steps  running: kms/ch-gva-2",
+		"Progress  2/2 steps  running: root-api/ch-gva-2",
+		"Progress  2/2 steps  success",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestFormatterFallsBackForNonProgressBody(t *testing.T) {
+	for _, body := range []any{
+		map[string]any{"message": "cannot match command"},
+		map[string]any{"event": "error", "data": map[string]any{"message": "failed"}},
+		[]any{"one", "two"},
+	} {
+		var out bytes.Buffer
+		f := &formatter{w: &out, style: defaultBarStyle()}
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+			t.Fatal(err)
+		}
+		if out.Len() != 0 || !f.fallback {
+			t.Fatalf("body = %#v, output = %q, fallback = %v", body, out.String(), f.fallback)
+		}
+	}
+}
+
+func TestFormatterIgnoresTransportEvents(t *testing.T) {
+	for _, event := range []string{"heartbeat", "eof"} {
+		var out bytes.Buffer
+		f := &formatter{w: &out, style: defaultBarStyle()}
+		body := map[string]any{"event": event, "data": map[string]any{"status": "job/success"}}
+		if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: body}}); err != nil {
+			t.Fatal(err)
+		}
+		if out.Len() != 0 || f.fallback {
+			t.Fatalf("event = %q, output = %q, fallback = %v", event, out.String(), f.fallback)
+		}
+	}
+
+	var out bytes.Buffer
+	f := &formatter{w: &out, style: defaultBarStyle()}
+	started := map[string]any{"event": "started", "data": map[string]any{"total": 2}}
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: started}}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	eof := map[string]any{"event": "eof", "data": map[string]any{"status": "job/success"}}
+	if err := f.Handle(formatterRequest{Event: "item", Response: plugin.FormatterResponse{Body: eof}}); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 || f.current != 0 || f.fallback {
+		t.Fatalf("active sequence after eof: output = %q, current = %d, fallback = %v", out.String(), f.current, f.fallback)
+	}
+}
+
+func TestRenderTruncatesToTerminalWidth(t *testing.T) {
+	current, total := int64(1), int64(16)
+	got, err := renderWidth(progress{Label: "Progress", State: "running", Current: &current, Total: &total, Message: "compute-hypervisor-status/ch-gva-2"}, defaultBarStyle(), false, 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width := uniseg.StringWidth(got); width != 72 {
+		t.Fatalf("width = %d, want 72: %q", width, got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("output = %q, want ellipsis", got)
+	}
+}
+
+func TestRunFramesOutputAndNativeFallback(t *testing.T) {
+	var in, out bytes.Buffer
+	for _, req := range []formatterRequest{
+		{Type: "formatter", RequestID: 1, Format: "progress", Event: "start", Color: true},
+		{Type: "formatter", RequestID: 2, Format: "progress", Event: "item", Response: plugin.FormatterResponse{Body: map[string]any{"id": "work", "current": 1, "total": 2}}},
+		{Type: "formatter", RequestID: 3, Format: "progress", Event: "item", Response: plugin.FormatterResponse{Body: map[string]any{"message": "cannot match command"}}},
+		{Type: "formatter", RequestID: 4, Format: "progress", Event: "end"},
+	} {
+		if err := plugin.WriteMessage(&in, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run(&in, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	dec := plugin.NewDecoder(&out)
+	var outputs []formatterOutput
+	for {
+		var msg formatterOutput
+		if err := dec.ReadMessage(&msg); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		outputs = append(outputs, msg)
+	}
+	dataFrames := 0
+	for _, msg := range outputs {
+		if msg.RequestID == 2 && len(msg.Data) > 0 {
+			dataFrames++
+		}
+	}
+	if dataFrames != 1 {
+		t.Fatalf("outputs = %#v, want one progress frame", outputs)
+	}
+	if !slices.ContainsFunc(outputs, func(msg formatterOutput) bool {
+		return msg.RequestID == 3 && msg.Fallback && msg.Complete
+	}) {
+		t.Fatalf("outputs = %#v, want native fallback", outputs)
 	}
 }
 

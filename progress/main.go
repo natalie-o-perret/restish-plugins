@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"strings"
 
 	"github.com/rest-sh/restish/v2/plugin"
+	"github.com/rivo/uniseg"
 	"github.com/schollz/progressbar/v3"
+	"golang.org/x/term"
 )
 
 type barStyle struct {
@@ -55,6 +58,8 @@ const (
 	emptyMarker = "\ue002"
 )
 
+var errNotProgress = errors.New("not a progress payload")
+
 type progress struct {
 	ID      string          `json:"id"`
 	Parent  string          `json:"parent"`
@@ -74,11 +79,20 @@ type progressGroup struct {
 
 type formatterRequest struct {
 	Type         string                   `cbor:"type"`
+	RequestID    uint64                   `cbor:"request_id,omitempty"`
 	Format       string                   `cbor:"format"`
 	Color        bool                     `cbor:"color,omitempty"`
 	Event        string                   `cbor:"event"`
 	PluginConfig json.RawMessage          `cbor:"plugin_config,omitempty"`
 	Response     plugin.FormatterResponse `cbor:"response"`
+}
+
+type formatterOutput struct {
+	Type      string `cbor:"type"`
+	RequestID uint64 `cbor:"request_id,omitempty"`
+	Data      []byte `cbor:"data,omitempty"`
+	Fallback  bool   `cbor:"fallback,omitempty"`
+	Complete  bool   `cbor:"complete,omitempty"`
 }
 
 type barStyleConfig struct {
@@ -106,6 +120,12 @@ type formatter struct {
 	lastLines   []string
 	lastByID    map[string]string
 	style       barStyle
+	termWidth   int
+	inferred    bool
+	current     int64
+	total       int64
+	failed      bool
+	fallback    bool
 }
 
 func main() {
@@ -115,29 +135,56 @@ func main() {
 		Description:       "Render streamed progress records as a terminal progress bar",
 		RestishAPIVersion: 2,
 		Hooks:             []string{"formatter"},
+		RequiredFeatures:  []string{"formatter.host_fallback"},
 		FormatterNames:    []string{"progress"},
 	}
 	if plugin.HandleStartupFlags(os.Stdout, manifest, nil) {
 		return
 	}
 
-	f := &formatter{w: os.Stdout, style: defaultBarStyle()}
-	dec := plugin.NewDecoder(os.Stdin)
+	if err := run(os.Stdin, os.Stdout); err != nil {
+		fail(err)
+	}
+}
+
+func run(in io.Reader, out io.Writer) error {
+	f := &formatter{style: defaultBarStyle()}
+	stream := &formatterOutputStream{w: out}
+	dec := plugin.NewDecoder(in)
 	for {
 		var req formatterRequest
 		if err := dec.ReadMessage(&req); err != nil {
-			fail(fmt.Errorf("read formatter request: %w", err))
+			return fmt.Errorf("read formatter request: %w", err)
 		}
 		if req.Type != "formatter" || req.Format != "progress" {
-			fail(fmt.Errorf("unexpected formatter request %q/%q", req.Type, req.Format))
+			return fmt.Errorf("unexpected formatter request %q/%q", req.Type, req.Format)
 		}
+		var data bytes.Buffer
+		f.w = &data
+		f.fallback = false
 		if err := f.Handle(req); err != nil {
-			fail(err)
+			return err
+		}
+		if data.Len() > 0 {
+			if err := stream.send(formatterOutput{Type: "formatter-output", RequestID: req.RequestID, Data: data.Bytes()}); err != nil {
+				return err
+			}
+		}
+		if err := stream.send(formatterOutput{Type: "formatter-output", RequestID: req.RequestID, Fallback: f.fallback, Complete: true}); err != nil {
+			return err
 		}
 		if req.Event == "end" {
-			return
+			return nil
 		}
 	}
+}
+
+type formatterOutputStream struct {
+	w io.Writer
+}
+
+func (s *formatterOutputStream) send(msg formatterOutput) error {
+	return plugin.WriteMessage(s.w, msg)
 }
 
 func (f *formatter) Handle(req formatterRequest) error {
@@ -152,16 +199,31 @@ func (f *formatter) Handle(req formatterRequest) error {
 	case "item":
 		if req.Color {
 			f.tty = true
+			if tty, err := os.Open("/dev/tty"); err == nil {
+				if width, _, err := term.GetSize(int(tty.Fd())); err == nil && width > 1 {
+					f.termWidth = width - 1
+				}
+				_ = tty.Close()
+			}
 		}
 		if req.Response.Body == nil {
 			return nil
 		}
 		progresses, snapshot, err := decodeProgresses(req.Response.Body)
+		if errors.Is(err, errNotProgress) {
+			return f.writeFallback(req.Response.Body)
+		}
 		if err != nil {
 			return err
 		}
 		if progresses == nil && !snapshot {
-			return nil
+			if ignorableEvent(req.Response.Body) {
+				return nil
+			} else if inferred, ok := f.inferProgress(req.Response.Body); ok {
+				progresses = []progress{inferred}
+			} else {
+				return f.writeFallback(req.Response.Body)
+			}
 		}
 		return f.write(progresses, snapshot)
 	case "end":
@@ -173,6 +235,133 @@ func (f *formatter) Handle(req formatterRequest) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported formatter event %q", req.Event)
+	}
+}
+
+func (f *formatter) writeFallback(_ any) error {
+	if f.tty && f.activeLines > 0 {
+		if _, err := fmt.Fprintln(f.w); err != nil {
+			return err
+		}
+		f.activeLines = 0
+		f.lastLines = nil
+	}
+	f.fallback = true
+	return nil
+}
+
+func ignorableEvent(value any) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var envelope struct {
+		Event string `json:"event"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return false
+	}
+	switch strings.ToLower(envelope.Event) {
+	case "heartbeat", "keepalive", "keep-alive", "eof":
+		return true
+	default:
+		return false
+	}
+}
+
+func (f *formatter) inferProgress(value any) (progress, bool) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return progress{}, false
+	}
+	var root struct {
+		Event string         `json:"event"`
+		Data  map[string]any `json:"data"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&root) != nil || root.Event == "" || root.Data == nil {
+		return progress{}, false
+	}
+	if _, ok := root.Data["records"]; ok {
+		return progress{}, false
+	}
+
+	event := strings.ToLower(root.Event)
+	complete := false
+	switch event {
+	case "start", "started", "begin", "began":
+		total, ok := integerField(root.Data, "total")
+		if !ok || total <= 0 {
+			return progress{}, false
+		}
+		f.inferred, f.current, f.total, f.failed = true, 0, total, false
+	case "complete", "completed", "finish", "finished", "done":
+		if !f.inferred {
+			return progress{}, false
+		}
+		complete = true
+		if failed, ok := integerField(root.Data, "failed"); ok && failed > 0 {
+			f.failed = true
+		}
+		if failureState(stringField(root.Data, "status", "state")) {
+			f.failed = true
+		}
+		if succeeded, ok := integerField(root.Data, "succeeded"); ok {
+			failed, _ := integerField(root.Data, "failed")
+			f.current = min(succeeded+failed, f.total)
+		} else {
+			f.current = f.total
+		}
+	case "heartbeat", "keepalive", "keep-alive":
+		return progress{}, false
+	default:
+		if !f.inferred {
+			return progress{}, false
+		}
+		f.current = min(f.current+1, f.total)
+		if failureState(event) || failureState(stringField(root.Data, "status", "state")) {
+			f.failed = true
+		}
+	}
+
+	current, total := f.current, f.total
+	state := "running"
+	if complete {
+		state = "success"
+		if f.failed {
+			state = "failure"
+		}
+		f.inferred = false
+	}
+	message := stringField(root.Data, root.Event, "message", "error", "label", "name", "id", "target", "resource", "item")
+	return progress{ID: "progress", Label: "Progress", State: state, Current: &current, Total: &total, Message: message}, true
+}
+
+func integerField(data map[string]any, key string) (int64, bool) {
+	value, ok := data[key].(json.Number)
+	if !ok {
+		return 0, false
+	}
+	n, err := value.Int64()
+	return n, err == nil
+}
+
+func stringField(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := data[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func failureState(value string) bool {
+	switch strings.ToLower(value) {
+	case "failure", "failed", "error", "ko":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -196,6 +385,10 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 		}
 	}
 	if len(raw) == 0 || raw[0] != '[' {
+		object, ok := decoded.(map[string]any)
+		if !ok || !looksLikeProgress(object) {
+			return nil, false, errNotProgress
+		}
 		p, err := decodeProgress(json.RawMessage(raw))
 		if err == nil && p.Parent != "" {
 			err = fmt.Errorf("progress record %q requires a snapshot containing parent %q", p.ID, p.Parent)
@@ -206,6 +399,12 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 	var records []json.RawMessage
 	if err := json.Unmarshal(raw, &records); err != nil {
 		return nil, true, fmt.Errorf("decode progress snapshot: %w", err)
+	}
+	for _, record := range records {
+		var object map[string]any
+		if json.Unmarshal(record, &object) != nil || !looksLikeProgress(object) {
+			return nil, false, errNotProgress
+		}
 	}
 	progresses := make([]progress, len(records))
 	ids := make(map[string]struct{}, len(records))
@@ -230,6 +429,15 @@ func decodeProgresses(value any) ([]progress, bool, error) {
 	return progresses, true, nil
 }
 
+func looksLikeProgress(value map[string]any) bool {
+	for _, key := range []string{"id", "parent", "label", "state", "current", "total", "unit"} {
+		if _, ok := value[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeProgressInput(value any) (any, bool, bool) {
 	root, ok := value.(map[string]any)
 	if !ok {
@@ -239,14 +447,16 @@ func normalizeProgressInput(value any) (any, bool, bool) {
 		if records, ok := data.([]any); ok {
 			return records, true, false
 		}
-		root, ok = data.(map[string]any)
-		if !ok {
+		dataObject, object := data.(map[string]any)
+		if object {
+			if records, ok := dataObject["records"].([]any); ok {
+				return records, true, false
+			}
+		}
+		if _, event := root["event"]; event {
 			return nil, false, true
 		}
-		if records, ok := root["records"].([]any); ok {
-			return records, true, false
-		}
-		return nil, false, true
+		return value, false, false
 	}
 	if records, ok := root["records"].([]any); ok {
 		return records, true, false
@@ -379,7 +589,7 @@ func (f *formatter) write(progresses []progress, snapshot bool) error {
 		if f.tty && treeBar(p) {
 			p.Label = ""
 		}
-		line, err := render(p, f.style, f.tty)
+		line, err := renderWidth(p, f.style, f.tty, f.termWidth)
 		if err != nil {
 			return err
 		}
@@ -459,6 +669,10 @@ func (f *formatter) write(progresses []progress, snapshot bool) error {
 }
 
 func render(p progress, style barStyle, color bool) (string, error) {
+	return renderWidth(p, style, color, 0)
+}
+
+func renderWidth(p progress, style barStyle, color bool, maxWidth int) (string, error) {
 	if p.Total == nil {
 		return progressDescription(p), nil
 	}
@@ -483,7 +697,26 @@ func render(p progress, style barStyle, color bool) (string, error) {
 		return "", fmt.Errorf("render progress: %w", err)
 	}
 	line := strings.TrimSpace(strings.TrimPrefix(bar.String(), "\r"))
-	return renderBarCells(line, style, color), nil
+	return renderBarCells(truncateWidth(line, maxWidth), style, color), nil
+}
+
+func truncateWidth(value string, width int) string {
+	if width < 2 || uniseg.StringWidth(value) <= width {
+		return value
+	}
+	var out strings.Builder
+	used := 0
+	graphemes := uniseg.NewGraphemes(value)
+	for graphemes.Next() {
+		part := graphemes.Str()
+		partWidth := uniseg.StringWidth(part)
+		if used+partWidth >= width {
+			break
+		}
+		out.WriteString(part)
+		used += partWidth
+	}
+	return out.String() + "…"
 }
 
 func renderTTYLines(progresses []progress, rendered []string, style barStyle) []string {

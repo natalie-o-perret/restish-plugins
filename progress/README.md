@@ -47,9 +47,20 @@ render as a tree of bars. Child records without counts remain available in
 redirected output as log details. Up to four active leaf bars are shown and
 further active leaves are collapsed into an overflow count.
 
-The formatter redraws the progress lines when Restish enables terminal
-formatting. Redirected or colour-disabled output emits only changed step
-records, which remains readable in logs and pipes.
+The formatter also infers a single progress bar from conventional event
+sequences: a `started` event with `data.total`, work events, then a `complete`
+event. It counts work events and uses common text fields as the current
+message. Explicit progress records always take precedence.
+Objects that do not look like progress payloads are delegated to Restish's
+native formatter instead of failing the formatter.
+
+The formatter redraws progress in place and truncates long descriptions to the
+terminal width when Restish enables terminal formatting. Redirected or
+colour-disabled output emits only changed step records, which remains readable
+in logs and pipes.
+
+This version requires a Restish host that supports the
+`formatter.host_fallback` plugin feature.
 
 ```text
 66% ████████████████░░░░░░░░  Deploy instances  2/3 steps  running: applying changes
