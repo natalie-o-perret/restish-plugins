@@ -52,8 +52,9 @@ Set the nested-record mode under `plugins.pretty` in `restish.json`:
 }
 ```
 
-- `auto` uses a table when the records have a consistent, shallow shape and
-  the terminal has enough room. This is the default.
+- `auto` uses a table when the records have a compatible, shallow shape and
+  the terminal has enough room. Optional fields become empty cells. This is
+  the default.
 - `table` uses a table whenever those records can be flattened without losing
   information, including records with optional fields and regardless of
   terminal width.
