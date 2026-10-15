@@ -204,10 +204,6 @@ func TestPrettyKeepsDeepNestedRecordsAsTree(t *testing.T) {
 
 func TestPrettyKeepsAmbiguousNestedRecordsAsTree(t *testing.T) {
 	tests := map[string][]any{
-		"missing field": {
-			map[string]any{"id": "node-a", "stats": map[string]any{"cpu": nil}},
-			map[string]any{"id": "node-b"},
-		},
 		"colliding path": {
 			map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40}},
 			map[string]any{"id": "node-b", "stats.cpu": 60},
@@ -236,24 +232,31 @@ func TestPrettyKeepsAmbiguousNestedRecordsAsTree(t *testing.T) {
 	}
 }
 
-func TestTableModeAllowsOptionalNestedRecordFields(t *testing.T) {
-	body := []any{
-		map[string]any{"id": "node-a", "stats": map[string]any{"cpu": 40}, "platform": "linux"},
-		map[string]any{"id": "node-b", "stats": map[string]any{"cpu": 60}},
-	}
-	rows, _ := recordCollection(body)
-	if _, ok := tabularRows(rows, 120, nestedRecordsAuto); ok {
-		t.Fatal("auto mode should reject optional nested-record fields")
-	}
-	if _, ok := tabularRows(rows, 120, nestedRecordsTable); !ok {
-		t.Fatal("table mode should allow optional nested-record fields")
+func TestPrettyTablesOptionalNestedRecordFieldsAutomatically(t *testing.T) {
+	body := map[string]any{"block-storage-volumes": []any{
+		map[string]any{
+			"blocksize": 4096, "id": "volume-a", "name": "attached", "state": "attached",
+			"instance": map[string]any{"id": "instance-a"}, "labels": map[string]any{},
+			"organization": map[string]any{"id": "organization-a"},
+			"zone":         map[string]any{"id": "zone-a", "name": "example-1"},
+		},
+		map[string]any{
+			"blocksize": 4096, "id": "volume-b", "name": "detached", "state": "detached",
+			"instance": map[string]any{}, "labels": map[string]any{},
+			"organization": map[string]any{"id": "organization-b"},
+			"zone":         map[string]any{"id": "zone-a", "name": "example-1"},
+		},
+	}}
+	rows, _ := recordCollection(body["block-storage-volumes"])
+	if _, ok := tabularRows(rows, 120, nestedRecordsAuto); !ok {
+		t.Fatal("auto mode should allow optional nested-record fields")
 	}
 
 	var out strings.Builder
-	if err := renderPrettyWithMode(&out, body, nestedRecordsTable); err != nil {
+	if err := renderPretty(&out, body); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"Platform", "Stats Cpu", "linux", "node-a", "node-b"} {
+	for _, expected := range []string{"Block Storage Volumes", "Instance Id", "Organization Id", "volume-a", "volume-b"} {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("table output omitted %q:\n%s", expected, out.String())
 		}

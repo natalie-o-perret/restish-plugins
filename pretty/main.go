@@ -280,15 +280,14 @@ func tabularRows(rows []map[string]any, width int, mode nestedRecordsMode) ([]ma
 			return nil, false
 		}
 		if mode != nestedRecordsTable {
-			for _, row := range flattened[1:] {
-				if len(row) != len(flattened[0]) {
-					return nil, false
-				}
-				for key, first := range flattened[0] {
-					value, exists := row[key]
-					if !exists || tableValueShape(value) != tableValueShape(first) {
+			shapes := map[string]byte{}
+			for _, row := range flattened {
+				for key, value := range row {
+					shape := tableValueShape(value)
+					if previous, exists := shapes[key]; exists && shape != previous {
 						return nil, false
 					}
+					shapes[key] = shape
 				}
 			}
 		}
