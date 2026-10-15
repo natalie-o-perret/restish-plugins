@@ -20,6 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - plugin: anonymize
+            coverage: 70
           - plugin: arazzo
             coverage: 63
           - plugin: pretty
@@ -40,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [arazzo, pretty, progress]
+        plugin: [anonymize, arazzo, pretty, progress]
     uses: natalie-o-perret/.github/.github/workflows/reusable-lint-files-go.yml@main
     with:
       go-version-file: ${{ matrix.plugin }}/go.mod
@@ -52,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [arazzo, pretty, progress]
+        plugin: [anonymize, arazzo, pretty, progress]
     uses: natalie-o-perret/.github/.github/workflows/reusable-codeql.yml@main
     with:
       language: go
