@@ -1,0 +1,23 @@
+{
+  "requestId": "11111111-2222-4333-8444-555555555555",
+  "resources": [
+    {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "name": "Alpha",
+      "attachment": {
+        "id": "12345678-1234-4234-8234-123456789abc"
+      },
+      "owner": {
+        "id": "99999999-8888-4777-8666-555555555555"
+      }
+    },
+    {
+      "id": "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb",
+      "name": "Beta",
+      "attachment": {},
+      "owner": {
+        "id": "99999999-8888-4777-8666-555555555555"
+      }
+    }
+  ]
+}

@@ -61,6 +61,21 @@ output before sharing it if names, email addresses, tokens, or free text may be
 sensitive. Restish bypasses response middleware for raw-body output, so raw
 responses are not anonymized.
 
+## Demo
+
+Serve the included fake response from the repository root:
+
+```console
+$ python3 -m http.server 8765 --bind 127.0.0.1
+```
+
+Then request it with either output format:
+
+```console
+$ restish get http://127.0.0.1:8765/anonymize/examples/response.json -o json --rsh-print b
+$ restish get http://127.0.0.1:8765/anonymize/examples/response.json -o pretty --rsh-print b
+```
+
 ## Development
 
 ```console
