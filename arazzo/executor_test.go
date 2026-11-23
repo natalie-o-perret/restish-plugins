@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/pb33f/go-yaml"
 	"github.com/pb33f/libopenapi"
 	az "github.com/pb33f/libopenapi/arazzo"
 	"github.com/rest-sh/restish/v2/plugin"
-	"go.yaml.in/yaml/v4"
 )
 
 type fakeRequestClient struct{ request *plugin.HTTPRequestMsg }

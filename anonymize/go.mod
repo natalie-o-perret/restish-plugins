@@ -3,7 +3,7 @@ module github.com/natalie-o-perret/restish-plugins/anonymize
 go 1.25.13
 
 require (
-	github.com/natalie-o-perret/go-data v0.0.0-20261015193031-592ff63ac029
+	github.com/natalie-o-perret/go-data v0.1.1
 	github.com/rest-sh/restish/v2 v2.3.0
 )
 

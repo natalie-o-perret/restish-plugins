@@ -9,6 +9,9 @@ Plugins for [Restish](https://rest.sh/):
 | [`pretty`](pretty/) | Render nested JSON as readable trees and tables |
 | [`progress`](progress/) | Render streaming progress updates |
 
+The workspace requires Go 1.26 or newer. The anonymize module retains its
+Go 1.25.13 minimum when used independently.
+
 Each plugin is an independent Go module. Build one from its directory or use
 the workspace to test them all:
 
