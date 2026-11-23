@@ -4,11 +4,30 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/pb33f/go-yaml"
 	az "github.com/pb33f/libopenapi/arazzo"
-	"go.yaml.in/yaml/v4"
 )
+
+func TestRunArazzoVersions(t *testing.T) {
+	for _, version := range []string{"1.0.0", "1.0.1", "1.1.0"} {
+		t.Run(version, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "workflow.yaml")
+			if err := os.WriteFile(file, []byte("arazzo: "+version+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			want := "one-workflow Arazzo document"
+			if version == "1.1.0" {
+				want = "unsupported Arazzo version"
+			}
+			if err := run("workflow", []string{"run", file}, nil); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("run = %v, want %q", err, want)
+			}
+		})
+	}
+}
 
 func TestTable(t *testing.T) {
 	got, err := table(map[string]any{"id": 42, "name": "Mochi"}, []string{"id", "name"})

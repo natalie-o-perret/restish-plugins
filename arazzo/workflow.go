@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/pb33f/libopenapi"
 	az "github.com/pb33f/libopenapi/arazzo"
@@ -24,6 +25,9 @@ func run(_ string, args []string, client *plugin.CommandClient) error {
 	doc, err := libopenapi.NewArazzoDocument(raw)
 	if err != nil {
 		return fmt.Errorf("parse Arazzo document: %w", err)
+	}
+	if !strings.HasPrefix(doc.Arazzo, "1.0.") {
+		return fmt.Errorf("unsupported Arazzo version %q: expected 1.0.x", doc.Arazzo)
 	}
 	if len(doc.SourceDescriptions) == 0 || len(doc.Workflows) != 1 {
 		return fmt.Errorf("one-workflow Arazzo document with at least one source required")

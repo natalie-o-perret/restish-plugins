@@ -12,7 +12,7 @@ containing one workflow across existing Restish API profiles. Arazzo is an
 OpenAPI Initiative specification, not an RFC.
 
 The plugin uses [`pb33f/libopenapi`](https://github.com/pb33f/libopenapi)
-v0.38.7 for Arazzo parsing and execution. Restish owns HTTP, authentication,
+v0.44.0 for Arazzo parsing and execution. Restish owns HTTP, authentication,
 TLS, retries, middleware, and profiles.
 
 ## Install
@@ -200,9 +200,9 @@ Select petId [1-2]: 1
 
 ## Compatibility
 
-- Go 1.25.7 or newer is required to build the plugin.
+- Go 1.26 or newer is required to build the plugin.
 - The manifest targets Restish plugin API v2 and the module uses Restish v2.3.0.
-- Arazzo 1.0.x is supported. The current `libopenapi` version rejects 1.1.x.
+- Arazzo 1.0.x is supported. The plugin rejects 1.1.x.
 - Restish plugins are trusted local executables and are not sandboxed.
 
 ## Troubleshooting

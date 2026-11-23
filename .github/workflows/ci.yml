@@ -22,16 +22,20 @@ jobs:
         include:
           - plugin: anonymize
             coverage: 70
+            go-versions: '["1.25","1.26","stable"]'
           - plugin: arazzo
             coverage: 63
+            go-versions: '["1.26","stable"]'
           - plugin: pretty
             coverage: 73
+            go-versions: '["1.26","stable"]'
           - plugin: progress
             coverage: 70
+            go-versions: '["1.26","stable"]'
     uses: natalie-o-perret/.github/.github/workflows/reusable-build-test-go.yml@main
     with:
-      go-versions: '["1.25","1.26"]'
-      go-version-latest: "1.26"
+      go-versions: ${{ matrix.go-versions }}
+      go-version-latest: stable
       coverage-threshold: ${{ matrix.coverage }}
       working-directory: ${{ matrix.plugin }}
       coverage-artifact-name: coverage-${{ matrix.plugin }}

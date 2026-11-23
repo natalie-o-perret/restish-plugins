@@ -151,9 +151,9 @@ byte formatting.
 
 ## Compatibility
 
-- Go 1.25.7 or newer is required to build the plugin.
+- Go 1.26 or newer is required to build the plugin.
 - The manifest targets Restish plugin API v2.
-- The module uses Restish v2.3.0 and go-pretty v6.8.3.
+- The module uses Restish v2.3.0 and go-pretty v6.9.3.
 - Restish plugins are trusted local executables and are not sandboxed.
 
 ## Development
